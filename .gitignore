@@ -1,0 +1,16 @@
+# compiled binary
+vm-builder-agent
+
+# certificates (generated locally, never commit private keys)
+certs/
+
+# terraform workspaces
+workspaces/
+
+# Go test cache and coverage output
+*.test
+*.out
+
+# editor
+.vscode/
+.idea/

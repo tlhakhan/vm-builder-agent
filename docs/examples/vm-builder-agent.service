@@ -1,0 +1,32 @@
+[Unit]
+Description=vm-builder-agent
+Documentation=https://github.com/tlhakhan/vm-builder-agent
+After=network-online.target libvirtd.service
+Wants=network-online.target
+Requires=libvirtd.service
+
+[Service]
+ExecStart=/usr/local/bin/vm-builder-agent \
+  --listen         :8443 \
+  --mtls \
+  --cert           /etc/vm-builder-agent/certs/server.crt \
+  --key            /etc/vm-builder-agent/certs/server.key \
+  --ca             /etc/vm-builder-agent/certs/ca.crt \
+  --core-repo      https://github.com/tlhakhan/vm-builder-core \
+  --terraform      terraform \
+  --workspaces-dir /var/lib/vm-builder-agent/workspaces
+
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vm-builder-agent
+
+# Run as root so virsh and terraform can manage KVM resources.
+# Scope down once a dedicated libvirt group or polkit policy is in place.
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
