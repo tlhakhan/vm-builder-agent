@@ -6,6 +6,7 @@ Wants=network-online.target
 Requires=libvirtd.service
 
 [Service]
+ExecStartPre=mkdir -p /var/lib/vm-builder-agent/workspaces
 ExecStart=/usr/local/bin/vm-builder-agent \
   --listen         :8443 \
   --mtls \
