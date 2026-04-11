@@ -9,8 +9,8 @@ Requires=libvirtd.service
 ExecStart=/usr/local/bin/vm-builder-agent \
   --listen         :8443 \
   --mtls \
-  --cert           /etc/vm-builder-agent/certs/server.crt \
-  --key            /etc/vm-builder-agent/certs/server.key \
+  --cert           /etc/vm-builder-agent/certs/vm-builder-agent.crt \
+  --key            /etc/vm-builder-agent/certs/vm-builder-agent.key \
   --ca             /etc/vm-builder-agent/certs/ca.crt \
   --core-repo      https://github.com/tlhakhan/vm-builder-core \
   --terraform      terraform \

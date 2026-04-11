@@ -6,12 +6,12 @@ A lightweight HTTP agent that runs on KVM/libvirt hypervisors and exposes a smal
 
 Managing VMs across multiple homelab hypervisors by SSH-ing into each one and running terraform by hand gets old fast. The goal of this project is a clean API surface that sits on each hypervisor, accepts requests from a central controller, and handles the full VM lifecycle — provisioning, power management, and teardown — without any manual intervention on the hypervisor itself.
 
-The agent is intentionally small. It does not try to be a full orchestration system. It delegates all provisioning logic to [vm-builder-core](https://github.com/tlhakhan/vm-builder-core) (a terraform + libvirt module) and exposes the results over HTTP. The central controller ([vm-api-server](https://github.com/tlhakhan/vm-api-server), built separately) talks to one agent per hypervisor over mTLS.
+The agent is intentionally small. It does not try to be a full orchestration system. It delegates all provisioning logic to [vm-builder-core](https://github.com/tlhakhan/vm-builder-core) (a terraform + libvirt module) and exposes the results over HTTP. The central controller ([vm-builder-apiserver](https://github.com/tlhakhan/vm-builder-apiserver), built separately) talks to one agent per hypervisor over mTLS.
 
 ## Architecture
 
 ```
-vm-api-server  (Raspberry Pi — built separately)
+vm-builder-apiserver  (Raspberry Pi — built separately)
       ↕  mTLS
 vm-builder-agent  (this repo — one instance per hypervisor)
       ↕  local

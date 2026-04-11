@@ -3,7 +3,6 @@
 ## Prerequisites
 
 - A KVM/libvirt hypervisor — see [github.com/tlhakhan/hypervisors](https://github.com/tlhakhan/hypervisors) for a recommended setup
-- `terraform` binary on your `$PATH`
 - `virsh` available (for VM list / detail / power operations)
 - `openssl` for TLS certificate generation
 
@@ -29,7 +28,7 @@ sudo cp vm-builder-agent /usr/local/bin/vm-builder-agent
 
 # copy certs (generated in the mTLS Setup section below)
 sudo mkdir -p /etc/vm-builder-agent/certs
-sudo cp certs/server.crt certs/server.key certs/ca.crt /etc/vm-builder-agent/certs/
+sudo cp certs/vm-builder-agent.crt certs/vm-builder-agent.key certs/ca.crt /etc/vm-builder-agent/certs/
 
 # create the workspaces directory
 sudo mkdir -p /var/lib/vm-builder-agent/workspaces
@@ -49,7 +48,7 @@ journalctl -u vm-builder-agent -f
 
 ---
 
-## Plain HTTP (no mTLS)
+## Development Testing (no mTLS)
 
 Good for local development and curl testing.
 
@@ -69,7 +68,7 @@ mkdir -p ~/vm-builder-workspaces
 
 ---
 
-## Manual Tests — Plain HTTP
+## Manual Tests — Development
 
 All examples below target `http://localhost:8080`.
 
@@ -166,7 +165,7 @@ curl -s http://localhost:8080/health | jq
 ## mTLS Setup
 
 The agent requires TLS 1.3 and validates the client certificate CN against
-`vm-api-server` (configurable via `--client-cn`).
+`vm-builder-apiserver` (configurable via `--client-cn`).
 
 ### 1. Create a directory for certificates
 
@@ -190,23 +189,23 @@ openssl req -new -x509 -days 3650 \
 The SAN must include `localhost` and `127.0.0.1` so curl trusts it.
 
 ```bash
-openssl genrsa -out server.key 4096
+openssl genrsa -out vm-builder-agent.key 4096
 
 openssl req -new \
-  -key server.key \
-  -out server.csr \
+  -key vm-builder-agent.key \
+  -out vm-builder-agent.csr \
   -subj "/CN=localhost"
 
 openssl x509 -req -days 365 \
-  -in server.csr \
+  -in vm-builder-agent.csr \
   -CA ca.crt -CAkey ca.key -CAcreateserial \
   -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1") \
-  -out server.crt
+  -out vm-builder-agent.crt
 ```
 
 ### 4. Generate the client certificate
 
-The CN must match `--client-cn` (default: `vm-api-server`).
+The CN must match `--client-cn` (default: `vm-builder-apiserver`).
 
 ```bash
 openssl genrsa -out client.key 4096
@@ -214,7 +213,7 @@ openssl genrsa -out client.key 4096
 openssl req -new \
   -key client.key \
   -out client.csr \
-  -subj "/CN=vm-api-server"
+  -subj "/CN=vm-builder-apiserver"
 
 openssl x509 -req -days 365 \
   -in client.csr \
@@ -234,8 +233,8 @@ mkdir -p ~/vm-builder-workspaces
 ./vm-builder-agent \
   --listen         :8443 \
   --mtls \
-  --cert           certs/server.crt \
-  --key            certs/server.key \
+  --cert           certs/vm-builder-agent.crt \
+  --key            certs/vm-builder-agent.key \
   --ca             certs/ca.crt \
   --core-repo      https://github.com/tlhakhan/vm-builder-core \
   --terraform      terraform \
@@ -319,7 +318,7 @@ curl -s --cacert certs/ca.crt https://localhost:8443/health
 # expected: curl: (56) ... certificate required
 ```
 
-A request with a client cert whose CN is not `vm-api-server` should receive
+A request with a client cert whose CN is not `vm-builder-apiserver` should receive
 `403 Forbidden`:
 
 ```bash

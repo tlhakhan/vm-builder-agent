@@ -15,14 +15,17 @@ import (
 	"github.com/tlhakhan/vm-builder-agent/server"
 )
 
+// version is set at build time via -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 func main() {
 	// ── flags ──────────────────────────────────────────────────────────────
 	listenAddr   := flag.String("listen", ":8443", "address to listen on")
 	mtls         := flag.Bool("mtls", false, "enable mTLS (requires --cert, --key, --ca)")
-	certFile     := flag.String("cert", "certs/server.crt", "server TLS certificate file")
-	keyFile      := flag.String("key", "certs/server.key", "server TLS key file")
-	caFile       := flag.String("ca", "certs/ca.crt", "CA certificate file for client verification")
-	clientCN     := flag.String("client-cn", "vm-api-server", "expected client certificate CN (mTLS only)")
+	certFile     := flag.String("cert", "/etc/vm-builder-agent/certs/vm-builder-agent.crt", "server TLS certificate file")
+	keyFile      := flag.String("key", "/etc/vm-builder-agent/certs/vm-builder-agent.key", "server TLS key file")
+	caFile       := flag.String("ca", "/etc/vm-builder-agent/certs/ca.crt", "CA certificate file for client verification")
+	clientCN     := flag.String("client-cn", "vm-builder-apiserver", "expected client certificate CN (mTLS only)")
 	coreRepo      := flag.String("core-repo", "", "git URL for vm-builder-core (required)")
 	terraformBin  := flag.String("terraform", "tofu", "terraform/opentofu binary name or path")
 	workspacesDir := flag.String("workspaces-dir", "/var/lib/vm-builder-agent/workspaces", "directory where per-VM terraform workspaces are kept")
@@ -41,6 +44,7 @@ func main() {
 
 	hostname, _ := os.Hostname()
 	slog.Info("starting vm-builder-agent",
+		"version", version,
 		"host", hostname,
 		"listen", *listenAddr,
 		"mtls", *mtls,
