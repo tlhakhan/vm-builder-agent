@@ -7,12 +7,12 @@ Requires=libvirtd.service
 
 [Service]
 ExecStartPre=mkdir -p /var/lib/vm-builder-agent/workspaces
+ExecStartPre=mkdir -p /etc/vm-builder-agent/private
 ExecStart=/usr/local/bin/vm-builder-agent \
   --listen         :8443 \
-  --mtls \
-  --cert           /etc/vm-builder-agent/certs/vm-builder-agent.crt \
-  --key            /etc/vm-builder-agent/certs/vm-builder-agent.key \
-  --ca             /etc/vm-builder-agent/certs/ca.crt \
+  --agent-mtls \
+  --agent-trusted-ca-url https://pki.example.internal/vm-builder-ca.crt \
+  --private-dir    /etc/vm-builder-agent/private \
   --core-repo      https://github.com/tlhakhan/vm-builder-core \
   --terraform      terraform \
   --workspaces-dir /var/lib/vm-builder-agent/workspaces

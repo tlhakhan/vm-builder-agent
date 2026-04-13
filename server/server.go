@@ -3,11 +3,8 @@
 package server
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/tlhakhan/vm-builder-agent/jobs"
 	"github.com/tlhakhan/vm-builder-agent/runner"
@@ -17,9 +14,8 @@ import (
 type Config struct {
 	ListenAddr string // e.g. ":8443"
 	MTLS       bool
-	CertFile   string
-	KeyFile    string
-	CAFile     string
+	CAURL      string
+	PrivateDir string
 	// ClientCN is the Common Name that client certs must present when mTLS is on.
 	ClientCN string
 }
@@ -51,7 +47,10 @@ func New(cfg Config, tracker *jobs.Tracker, r *runner.Runner) (*http.Server, err
 	}
 
 	if cfg.MTLS {
-		tlsCfg, err := buildTLSConfig(cfg.CertFile, cfg.KeyFile, cfg.CAFile)
+		if cfg.CAURL == "" {
+			return nil, fmt.Errorf("ca-url is required when mTLS is enabled")
+		}
+		tlsCfg, err := buildTLSConfig(cfg.PrivateDir, cfg.CAURL)
 		if err != nil {
 			return nil, fmt.Errorf("tls config: %w", err)
 		}
@@ -59,28 +58,4 @@ func New(cfg Config, tracker *jobs.Tracker, r *runner.Runner) (*http.Server, err
 	}
 
 	return srv, nil
-}
-
-// buildTLSConfig loads the server cert/key and CA pool for mTLS.
-func buildTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load cert/key: %w", err)
-	}
-
-	caPEM, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA: %w", err)
-	}
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("parse CA cert from %s", caFile)
-	}
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    caPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS13,
-	}, nil
 }

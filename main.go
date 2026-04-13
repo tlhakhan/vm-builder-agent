@@ -21,12 +21,11 @@ var version = "dev"
 func main() {
 	// ── flags ──────────────────────────────────────────────────────────────
 	listenAddr   := flag.String("listen", ":8443", "address to listen on")
-	mtls         := flag.Bool("mtls", false, "enable mTLS (requires --cert, --key, --ca)")
-	certFile     := flag.String("cert", "/etc/vm-builder-agent/certs/vm-builder-agent.crt", "server TLS certificate file")
-	keyFile      := flag.String("key", "/etc/vm-builder-agent/certs/vm-builder-agent.key", "server TLS key file")
-	caFile       := flag.String("ca", "/etc/vm-builder-agent/certs/ca.crt", "CA certificate file for client verification")
-	clientCN     := flag.String("client-cn", "vm-builder-apiserver", "expected client certificate CN (mTLS only)")
-	coreRepo      := flag.String("core-repo", "", "git URL for vm-builder-core (required)")
+	agentMTLS    := flag.Bool("agent-mtls", false, "enable mTLS for the agent listener (requires --agent-trusted-ca-url)")
+	agentCAURL   := flag.String("agent-trusted-ca-url", "", "URL to the CA certificate used to verify agent client certificates")
+	privateDir   := flag.String("private-dir", "/etc/vm-builder-agent/private", "directory where the agent stores its self-signed TLS certificate and private key")
+	clientCN     := flag.String("agent-authorized-client-cn", "vm-builder-apiserver", "expected client certificate CN for agent mTLS, signed by the trusted CA")
+	coreRepo     := flag.String("core-repo", "", "git URL for vm-builder-core (required)")
 	terraformBin  := flag.String("terraform", "tofu", "terraform/opentofu binary name or path")
 	workspacesDir := flag.String("workspaces-dir", "/var/lib/vm-builder-agent/workspaces", "directory where per-VM terraform workspaces are kept")
 	flag.Parse()
@@ -47,7 +46,9 @@ func main() {
 		"version", version,
 		"host", hostname,
 		"listen", *listenAddr,
-		"mtls", *mtls,
+		"agent_mtls", *agentMTLS,
+		"agent_trusted_ca_url", *agentCAURL,
+		"private_dir", *privateDir,
 		"core_repo", *coreRepo,
 		"terraform_bin", *terraformBin,
 		"workspaces_dir", *workspacesDir,
@@ -64,10 +65,9 @@ func main() {
 
 	srv, err := server.New(server.Config{
 		ListenAddr: *listenAddr,
-		MTLS:       *mtls,
-		CertFile:   *certFile,
-		KeyFile:    *keyFile,
-		CAFile:     *caFile,
+		MTLS:       *agentMTLS,
+		CAURL:      *agentCAURL,
+		PrivateDir: *privateDir,
 		ClientCN:   *clientCN,
 	}, tracker, r)
 	if err != nil {
@@ -78,7 +78,7 @@ func main() {
 	// ── serve ──────────────────────────────────────────────────────────────
 	errCh := make(chan error, 1)
 	go func() {
-		if *mtls {
+		if *agentMTLS {
 			slog.Info("listening with mTLS", "addr", *listenAddr)
 			// TLSConfig is already set; pass empty strings to use it.
 			errCh <- srv.ListenAndServeTLS("", "")

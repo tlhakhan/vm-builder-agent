@@ -165,49 +165,30 @@ curl -s http://localhost:8080/health | jq
 ## mTLS Setup
 
 The agent requires TLS 1.3 and validates the client certificate CN against
-`vm-builder-apiserver` (configurable via `--client-cn`).
+`vm-builder-apiserver` (configurable via `--agent-authorized-client-cn`).
 
-### 1. Create a directory for certificates
+The client-trust CA is now provided with `--agent-trusted-ca-url`. The agent fetches that CA
+certificate at startup and uses it to verify incoming client certificates.
+
+The agent no longer requires a manually created server certificate. When mTLS is
+enabled it creates a self-signed certificate/key pair in `--private-dir`
+(default: `/etc/vm-builder-agent/private`) and reuses it on later starts.
+
+### 1. Generate the client CA and client certificate
+
+Only the CA and client certificate need to be created by hand now. The client
+certificate CN must match `--agent-authorized-client-cn` (default: `vm-builder-apiserver`).
 
 ```bash
 mkdir -p certs && cd certs
-```
 
-### 2. Generate the CA
-
-```bash
 openssl genrsa -out ca.key 4096
 
 openssl req -new -x509 -days 3650 \
   -key ca.key \
   -out ca.crt \
   -subj "/CN=vm-builder-ca"
-```
 
-### 3. Generate the server certificate
-
-The SAN must include `localhost` and `127.0.0.1` so curl trusts it.
-
-```bash
-openssl genrsa -out vm-builder-agent.key 4096
-
-openssl req -new \
-  -key vm-builder-agent.key \
-  -out vm-builder-agent.csr \
-  -subj "/CN=localhost"
-
-openssl x509 -req -days 365 \
-  -in vm-builder-agent.csr \
-  -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1") \
-  -out vm-builder-agent.crt
-```
-
-### 4. Generate the client certificate
-
-The CN must match `--client-cn` (default: `vm-builder-apiserver`).
-
-```bash
 openssl genrsa -out client.key 4096
 
 openssl req -new \
@@ -219,36 +200,54 @@ openssl x509 -req -days 365 \
   -in client.csr \
   -CA ca.crt -CAkey ca.key -CAcreateserial \
   -out client.crt
-```
 
-```bash
 cd ..  # back to repo root
 ```
 
-### 5. Start the agent with mTLS
+### 2. Publish the CA certificate somewhere the agent can fetch it
+
+Any reachable `http://` or `https://` URL works. For local testing you can serve
+the cert directly:
+
+```bash
+cd certs
+python3 -m http.server 9000
+```
+
+With that running, the CA URL becomes `http://localhost:9000/ca.crt`.
+
+### 3. Start the agent with mTLS
 
 ```bash
 mkdir -p ~/vm-builder-workspaces
+mkdir -p /tmp/vm-builder-agent-private
 
 ./vm-builder-agent \
   --listen         :8443 \
-  --mtls \
-  --cert           certs/vm-builder-agent.crt \
-  --key            certs/vm-builder-agent.key \
-  --ca             certs/ca.crt \
+  --agent-mtls \
+  --agent-trusted-ca-url http://localhost:9000/ca.crt \
+  --private-dir    /tmp/vm-builder-agent-private \
   --core-repo      https://github.com/tlhakhan/vm-builder-core \
   --terraform      terraform \
   --workspaces-dir ~/vm-builder-workspaces
+```
+
+The agent will create these files on first start:
+
+```text
+/tmp/vm-builder-agent-private/vm-builder-agent.crt
+/tmp/vm-builder-agent-private/vm-builder-agent.key
 ```
 
 ---
 
 ## Manual Tests — mTLS
 
-Prefix every curl with the three TLS flags:
+Prefix every curl with the agent's generated server certificate plus the client
+certificate pair:
 
 ```bash
-CURL_TLS="--cacert certs/ca.crt --cert certs/client.crt --key certs/client.key"
+CURL_TLS="--cacert /tmp/vm-builder-agent-private/vm-builder-agent.crt --cert certs/client.crt --key certs/client.key"
 BASE=https://localhost:8443
 ```
 
@@ -314,7 +313,7 @@ curl -s -N $CURL_TLS -X DELETE $BASE/vm/ubuntu-0
 A request without a client certificate should be rejected:
 
 ```bash
-curl -s --cacert certs/ca.crt https://localhost:8443/health
+curl -s --cacert /tmp/vm-builder-agent-private/vm-builder-agent.crt https://localhost:8443/health
 # expected: curl: (56) ... certificate required
 ```
 
@@ -328,7 +327,7 @@ openssl x509 -req -days 1 -in /tmp/wrong.csr \
   -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
   -out /tmp/wrong.crt
 
-curl -s --cacert certs/ca.crt --cert /tmp/wrong.crt --key certs/client.key \
+curl -s --cacert /tmp/vm-builder-agent-private/vm-builder-agent.crt --cert /tmp/wrong.crt --key certs/client.key \
   https://localhost:8443/health
 # expected: forbidden: unexpected client CN
 ```

@@ -28,7 +28,7 @@ vm-builder-core  (terraform + libvirt provisioning)
 - Exposes virsh-backed endpoints for VM listing, details, and power management
 - Reports hypervisor node info (CPU, memory, disk, running VMs)
 - Enforces one operation per VM at a time — duplicate requests get a `409 Conflict`
-- Supports toggleable mTLS with client CN verification for production use
+- Supports toggleable mTLS with client CN verification, a CA loaded from URL, and an auto-generated self-signed server certificate
 
 ## API
 
