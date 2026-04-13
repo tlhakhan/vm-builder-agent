@@ -26,9 +26,8 @@ Install it on the hypervisor:
 # copy the binary
 sudo cp vm-builder-agent /usr/local/bin/vm-builder-agent
 
-# copy certs (generated in the mTLS Setup section below)
-sudo mkdir -p /etc/vm-builder-agent/certs
-sudo cp certs/vm-builder-agent.crt certs/vm-builder-agent.key certs/ca.crt /etc/vm-builder-agent/certs/
+# create the private directory (agent generates its TLS cert/key here on first start)
+sudo mkdir -p /etc/vm-builder-agent/private
 
 # create the workspaces directory
 sudo mkdir -p /var/lib/vm-builder-agent/workspaces
@@ -48,6 +47,21 @@ journalctl -u vm-builder-agent -f
 
 ---
 
+## Flag Reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--listen` | `:8443` | Address to listen on |
+| `--agent-mtls` | `false` | Enable mTLS for the agent listener |
+| `--agent-trusted-ca-url` | _(required when mTLS enabled)_ | URL to the CA certificate used to verify client certificates |
+| `--agent-authorized-client-cn` | `vm-builder-apiserver` | Expected client certificate CN for mTLS |
+| `--private-dir` | `/etc/vm-builder-agent/private` | Directory where the agent stores its auto-generated TLS certificate and key |
+| `--core-repo` | _(required)_ | Git URL for vm-builder-core |
+| `--terraform` | `tofu` | Terraform/OpenTofu binary name or path |
+| `--workspaces-dir` | `/var/lib/vm-builder-agent/workspaces` | Directory where per-VM Terraform workspaces are kept |
+
+---
+
 ## Development Testing (no mTLS)
 
 Good for local development and curl testing.
@@ -60,7 +74,7 @@ mkdir -p ~/vm-builder-workspaces
 ./vm-builder-agent \
   --listen        :8080 \
   --core-repo     https://github.com/tlhakhan/vm-builder-core \
-  --terraform     terraform \
+  --terraform     tofu \
   --workspaces-dir ~/vm-builder-workspaces
 ```
 
@@ -228,7 +242,7 @@ mkdir -p /tmp/vm-builder-agent-private
   --agent-trusted-ca-url http://localhost:9000/ca.crt \
   --private-dir    /tmp/vm-builder-agent-private \
   --core-repo      https://github.com/tlhakhan/vm-builder-core \
-  --terraform      terraform \
+  --terraform      tofu \
   --workspaces-dir ~/vm-builder-workspaces
 ```
 
