@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,131 +41,169 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+func writeErrorJSON(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+type jobCreatedResponse struct {
+	JobID string `json:"job_id"`
+}
+
+type jobStatusResponse struct {
+	JobID     string     `json:"job_id"`
+	VMName    string     `json:"vm_name,omitempty"`
+	Action    string     `json:"action,omitempty"`
+	Status    string     `json:"status"`
+	Log       string     `json:"log"`
+	StartTime time.Time  `json:"start_time"`
+	EndTime   *time.Time `json:"end_time,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	ErrorCode string     `json:"error_code,omitempty"`
+}
+
+func newJobStatusResponse(job jobs.JobSnapshot) jobStatusResponse {
+	status := "running"
+	switch job.Phase {
+	case jobs.PhaseDone:
+		status = "done"
+	case jobs.PhaseFailed:
+		status = "failed"
+	}
+
+	return jobStatusResponse{
+		JobID:     job.ID,
+		VMName:    job.VMName,
+		Action:    job.Action,
+		Status:    status,
+		Log:       job.Log,
+		StartTime: job.StartTime,
+		EndTime:   job.EndTime,
+		Error:     job.Err,
+		ErrorCode: job.ErrorCode,
+	}
+}
+
 // POST /vm/create
 func (h *handlers) createVM(w http.ResponseWriter, r *http.Request) {
 	var params runner.VMParams
 	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	if params.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "name is required")
 		return
 	}
 
 	if h.runner.WorkspaceExists(params.Name) {
-		http.Error(w, runner.ErrVMExists{VMName: params.Name}.Error(), http.StatusConflict)
+		writeErrorJSON(w, http.StatusConflict, runner.ErrVMExists{VMName: params.Name}.Error())
 		return
 	}
 
 	unlock, err := h.runner.LockVM(params.Name)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeErrorJSON(w, http.StatusConflict, err.Error())
 		return
 	}
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 
 	id, err := generateID()
 	if err != nil {
-		http.Error(w, "failed to generate job id", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to generate job id")
 		return
 	}
 
 	job := &jobs.Job{
 		ID:        id,
 		VMName:    params.Name,
+		Action:    "create",
 		Phase:     jobs.PhaseCloning,
 		StartTime: time.Now(),
 	}
 	h.tracker.Add(job)
 
 	slog.Info("create VM job started", "job_id", id, "vm_name", params.Name)
+	jobCtx := context.WithoutCancel(r.Context())
+	go func(ctx context.Context, job *jobs.Job, params runner.VMParams) {
+		defer unlock()
+		err := h.runner.Create(ctx, job, params, io.Discard)
 
-	// Stream the terraform output back to the caller.
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Job-ID", id)
-	w.Header().Set("Transfer-Encoding", "chunked")
-	w.WriteHeader(http.StatusOK)
-
-	fmt.Fprintf(w, "job_id: %s\n\n", id)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
-
-	err = h.runner.Create(r.Context(), job, params, w)
-	job.Finish(err)
-
-	if err != nil {
-		var exists runner.ErrVMExists
-		if errors.As(err, &exists) {
-			slog.Warn("create rejected: VM already exists", "job_id", id, "vm_name", params.Name)
-		} else {
-			slog.Error("create VM job failed", "job_id", id, "vm_name", params.Name, "err", err)
+		if err != nil {
+			var exists runner.ErrVMExists
+			if errors.As(err, &exists) {
+				job.FinishWithCode(err, jobs.ErrorCodeDuplicate)
+				slog.Warn("create rejected: VM already exists", "job_id", id, "vm_name", params.Name)
+			} else {
+				job.FinishWithCode(err, jobs.ErrorCodeCreateFailed)
+				slog.Error("create VM job failed", "job_id", id, "vm_name", params.Name, "err", err)
+			}
+			return
 		}
-		fmt.Fprintf(w, "\nERROR: %s\n", err)
-	} else {
+		job.Finish(nil)
 		slog.Info("create VM job completed", "job_id", id, "vm_name", params.Name)
-		fmt.Fprintf(w, "\nDONE\n")
-	}
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
+	}(jobCtx, job, params)
+	locked = false
+
+	writeJSON(w, http.StatusOK, jobCreatedResponse{JobID: id})
 }
 
 // DELETE /vm/{name}
 func (h *handlers) deleteVM(w http.ResponseWriter, r *http.Request) {
 	vmName := r.PathValue("name")
 	if vmName == "" {
-		http.Error(w, "vm name is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "vm name is required")
 		return
 	}
 
 	unlock, err := h.runner.LockVM(vmName)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeErrorJSON(w, http.StatusConflict, err.Error())
 		return
 	}
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 
 	id, err := generateID()
 	if err != nil {
-		http.Error(w, "failed to generate job id", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to generate job id")
 		return
 	}
 
 	job := &jobs.Job{
 		ID:        id,
 		VMName:    vmName,
+		Action:    "delete",
 		Phase:     jobs.PhaseCloning,
 		StartTime: time.Now(),
 	}
 	h.tracker.Add(job)
 
 	slog.Info("delete VM job started", "job_id", id, "vm_name", vmName)
+	jobCtx := context.WithoutCancel(r.Context())
+	go func(ctx context.Context, job *jobs.Job, vmName string) {
+		defer unlock()
+		err := h.runner.Destroy(ctx, job, vmName, io.Discard)
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Job-ID", id)
-	w.Header().Set("Transfer-Encoding", "chunked")
-	w.WriteHeader(http.StatusOK)
-
-	fmt.Fprintf(w, "job_id: %s\n\n", id)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
-
-	err = h.runner.Destroy(r.Context(), job, vmName, w)
-	job.Finish(err)
-
-	if err != nil {
-		slog.Error("delete VM job failed", "job_id", id, "vm_name", vmName, "err", err)
-		fmt.Fprintf(w, "\nERROR: %s\n", err)
-	} else {
+		if err != nil {
+			job.FinishWithCode(err, jobs.ErrorCodeDeleteFailed)
+			slog.Error("delete VM job failed", "job_id", id, "vm_name", vmName, "err", err)
+			return
+		}
+		job.Finish(nil)
 		slog.Info("delete VM job completed", "job_id", id, "vm_name", vmName)
-		fmt.Fprintf(w, "\nDONE\n")
-	}
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
+	}(jobCtx, job, vmName)
+	locked = false
+
+	writeJSON(w, http.StatusOK, jobCreatedResponse{JobID: id})
 }
 
 // virshVM is one row from virsh list --all.
@@ -183,11 +221,14 @@ func (h *handlers) listVMs(w http.ResponseWriter, r *http.Request) {
 	out, err := exec.CommandContext(ctx, "virsh", "list", "--all").Output()
 	if err != nil {
 		slog.Error("virsh list failed", "err", err)
-		http.Error(w, "virsh list failed: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "virsh list failed: "+err.Error())
 		return
 	}
 
 	vms := parseVirshList(string(out))
+	if vms == nil {
+		vms = []virshVM{}
+	}
 	writeJSON(w, http.StatusOK, vms)
 }
 
@@ -233,12 +274,46 @@ type vmInfo struct {
 	UUID       string `json:"uuid"`
 	State      string `json:"state"`
 	CPUs       string `json:"cpus"`
-	MaxMemory  string `json:"maxMemory"`
-	UsedMemory string `json:"usedMemory"`
+	MaxMemory  string `json:"max_memory"`
+	UsedMemory string `json:"used_memory"`
 	Persistent string `json:"persistent"`
 	Autostart  string `json:"autostart"`
 	// from terraform.tfvars (omitted when workspace is absent)
-	CreationParams *runner.PublicVMParams `json:"creationParams,omitempty"`
+	CreationParams *publicVMParamsResponse `json:"creation_params,omitempty"`
+}
+
+type publicVMParamsResponse struct {
+	Name                 string `json:"name"`
+	CPU                  int    `json:"cpu"`
+	MemoryGiB            int    `json:"memory_gib"`
+	DisksGiB             []int  `json:"disks_gib"`
+	CloudImageURL        string `json:"cloud_image_url"`
+	ConsoleUser          string `json:"console_user"`
+	AutomationUser       string `json:"automation_user"`
+	AutomationUserPubkey string `json:"automation_user_pubkey"`
+	PCIDevices           []int  `json:"pci_devices"`
+}
+
+func newPublicVMParamsResponse(params runner.PublicVMParams) *publicVMParamsResponse {
+	disks := params.DisksGiB
+	if disks == nil {
+		disks = []int{}
+	}
+	pci := params.PCIDevices
+	if pci == nil {
+		pci = []int{}
+	}
+	return &publicVMParamsResponse{
+		Name:                 params.Name,
+		CPU:                  params.CPU,
+		MemoryGiB:            params.MemoryGiB,
+		DisksGiB:             disks,
+		CloudImageURL:        params.CloudImageURL,
+		ConsoleUser:          params.ConsoleUser,
+		AutomationUser:       params.AutomationUser,
+		AutomationUserPubkey: params.AutomationUserPubkey,
+		PCIDevices:           pci,
+	}
 }
 
 // GET /vm/{name} — returns virsh dominfo combined with creation params as JSON.
@@ -251,14 +326,14 @@ func (h *handlers) getVM(w http.ResponseWriter, r *http.Request) {
 	out, err := exec.CommandContext(ctx, "virsh", "dominfo", vmName).Output()
 	if err != nil {
 		slog.Error("virsh dominfo failed", "vm_name", vmName, "err", err)
-		http.Error(w, "virsh dominfo failed: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "virsh dominfo failed: "+err.Error())
 		return
 	}
 
 	info := parseVirshDominfo(string(out))
 
 	if params, err := h.runner.WorkspaceParams(vmName); err == nil {
-		info.CreationParams = &params
+		info.CreationParams = newPublicVMParamsResponse(params)
 	}
 
 	writeJSON(w, http.StatusOK, info)
@@ -302,7 +377,8 @@ func parseVirshDominfo(output string) vmInfo {
 
 // virshActionResponse is returned by start and shutdown endpoints.
 type virshActionResponse struct {
-	VMName  string `json:"vmName"`
+	OK      bool   `json:"ok"`
+	Name    string `json:"name"`
 	Message string `json:"message"`
 }
 
@@ -316,13 +392,14 @@ func (h *handlers) startVM(w http.ResponseWriter, r *http.Request) {
 	out, err := exec.CommandContext(ctx, "virsh", "start", vmName).CombinedOutput()
 	if err != nil {
 		slog.Error("virsh start failed", "vm_name", vmName, "err", err, "output", string(out))
-		http.Error(w, "virsh start failed: "+strings.TrimSpace(string(out)), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "virsh start failed: "+strings.TrimSpace(string(out)))
 		return
 	}
 
 	slog.Info("VM started", "vm_name", vmName)
 	writeJSON(w, http.StatusOK, virshActionResponse{
-		VMName:  vmName,
+		OK:      true,
+		Name:    vmName,
 		Message: strings.TrimSpace(string(out)),
 	})
 }
@@ -337,13 +414,14 @@ func (h *handlers) shutdownVM(w http.ResponseWriter, r *http.Request) {
 	out, err := exec.CommandContext(ctx, "virsh", "shutdown", vmName).CombinedOutput()
 	if err != nil {
 		slog.Error("virsh shutdown failed", "vm_name", vmName, "err", err, "output", string(out))
-		http.Error(w, "virsh shutdown failed: "+strings.TrimSpace(string(out)), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "virsh shutdown failed: "+strings.TrimSpace(string(out)))
 		return
 	}
 
 	slog.Info("VM shutdown initiated", "vm_name", vmName)
 	writeJSON(w, http.StatusOK, virshActionResponse{
-		VMName:  vmName,
+		OK:      true,
+		Name:    vmName,
 		Message: strings.TrimSpace(string(out)),
 	})
 }
@@ -353,17 +431,17 @@ func (h *handlers) getJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	job, ok := h.tracker.Get(id)
 	if !ok {
-		http.Error(w, "job not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "job not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, job.Snapshot())
+	writeJSON(w, http.StatusOK, newJobStatusResponse(job.Snapshot()))
 }
 
 // healthResponse is the body returned by GET /health.
 type healthResponse struct {
 	Hostname   string `json:"hostname"`
-	UptimeSec  int64  `json:"uptimeSec"`
-	ActiveJobs int    `json:"activeJobs"`
+	UptimeSec  int64  `json:"uptime_sec"`
+	ActiveJobs int    `json:"active_jobs"`
 }
 
 var startTime = time.Now()

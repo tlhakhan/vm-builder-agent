@@ -18,14 +18,22 @@ const (
 	PhaseFailed     Phase = "failed"
 )
 
+const (
+	ErrorCodeDuplicate    = "duplicate"
+	ErrorCodeCreateFailed = "create_failed"
+	ErrorCodeDeleteFailed = "delete_failed"
+)
+
 // Job holds the full state of one in-flight or completed terraform operation.
 type Job struct {
-	ID        string     `json:"id"`
-	VMName    string     `json:"vmName"`
+	ID        string     `json:"job_id"`
+	VMName    string     `json:"vm_name"`
+	Action    string     `json:"action,omitempty"`
 	Phase     Phase      `json:"phase"`
-	StartTime time.Time  `json:"startTime"`
-	EndTime   *time.Time `json:"endTime,omitempty"`
+	StartTime time.Time  `json:"start_time"`
+	EndTime   *time.Time `json:"end_time,omitempty"`
 	Err       string     `json:"error,omitempty"`
+	ErrorCode string     `json:"error_code,omitempty"`
 
 	mu  sync.Mutex
 	log strings.Builder
@@ -69,6 +77,23 @@ func (j *Job) Finish(err error) {
 	}
 }
 
+// FinishWithCode marks the job as done or failed and records a machine-readable
+// error code when available.
+func (j *Job) FinishWithCode(err error, code string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	now := time.Now()
+	j.EndTime = &now
+	if err != nil {
+		j.Phase = PhaseFailed
+		j.Err = err.Error()
+		j.ErrorCode = code
+	} else {
+		j.Phase = PhaseDone
+		j.ErrorCode = ""
+	}
+}
+
 // Snapshot returns a copy safe for JSON serialisation.
 func (j *Job) Snapshot() JobSnapshot {
 	j.mu.Lock()
@@ -76,10 +101,12 @@ func (j *Job) Snapshot() JobSnapshot {
 	snap := JobSnapshot{
 		ID:        j.ID,
 		VMName:    j.VMName,
+		Action:    j.Action,
 		Phase:     j.Phase,
 		StartTime: j.StartTime,
 		EndTime:   j.EndTime,
 		Err:       j.Err,
+		ErrorCode: j.ErrorCode,
 		Log:       j.log.String(),
 	}
 	return snap
@@ -87,12 +114,14 @@ func (j *Job) Snapshot() JobSnapshot {
 
 // JobSnapshot is a point-in-time, lock-free view of a Job for serialisation.
 type JobSnapshot struct {
-	ID        string     `json:"id"`
-	VMName    string     `json:"vmName"`
+	ID        string     `json:"job_id"`
+	VMName    string     `json:"vm_name"`
+	Action    string     `json:"action,omitempty"`
 	Phase     Phase      `json:"phase"`
-	StartTime time.Time  `json:"startTime"`
-	EndTime   *time.Time `json:"endTime,omitempty"`
+	StartTime time.Time  `json:"start_time"`
+	EndTime   *time.Time `json:"end_time,omitempty"`
 	Err       string     `json:"error,omitempty"`
+	ErrorCode string     `json:"error_code,omitempty"`
 	Log       string     `json:"log"`
 }
 

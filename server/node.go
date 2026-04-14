@@ -14,31 +14,31 @@ import (
 )
 
 type nodeInfoResponse struct {
-	Hostname      string    `json:"hostname"`
-	KernelVersion string    `json:"kernelVersion"`
-	OSName        string    `json:"osName"`
-	CPU           nodeCPU   `json:"cpu"`
+	Hostname      string     `json:"hostname"`
+	KernelVersion string     `json:"kernel_version"`
+	OSName        string     `json:"os_name"`
+	CPU           nodeCPU    `json:"cpu"`
 	Memory        nodeMemory `json:"memory"`
-	Disk          *nodeFS   `json:"disk,omitempty"`
-	VMs           nodeVMs   `json:"vms"`
+	Disk          *nodeFS    `json:"disk,omitempty"`
+	VMs           nodeVMs    `json:"vms"`
 }
 
 type nodeCPU struct {
-	ModelName  string `json:"modelName"`
-	TotalCores int    `json:"totalCores"`
+	ModelName  string `json:"model_name"`
+	TotalCores int    `json:"total_cores"`
 }
 
 type nodeMemory struct {
-	TotalBytes     int64 `json:"totalBytes"`
-	UsedBytes      int64 `json:"usedBytes"`
-	FreeBytes      int64 `json:"freeBytes"`
-	AvailableBytes int64 `json:"availableBytes"`
+	TotalBytes     int64 `json:"total_bytes"`
+	UsedBytes      int64 `json:"used_bytes"`
+	FreeBytes      int64 `json:"free_bytes"`
+	AvailableBytes int64 `json:"available_bytes"`
 }
 
 type nodeFS struct {
-	TotalBytes int64 `json:"totalBytes"`
-	UsedBytes  int64 `json:"usedBytes"`
-	FreeBytes  int64 `json:"freeBytes"`
+	TotalBytes int64 `json:"total_bytes"`
+	UsedBytes  int64 `json:"used_bytes"`
+	FreeBytes  int64 `json:"free_bytes"`
 }
 
 type nodeVMs struct {

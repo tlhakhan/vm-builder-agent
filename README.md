@@ -22,7 +22,7 @@ vm-builder-core  (terraform + libvirt provisioning)
 
 - Clones [vm-builder-core](https://github.com/tlhakhan/vm-builder-core) into a per-VM workspace on each create request
 - Writes a `terraform.tfvars` from the request payload and runs `terraform init + apply`
-- Streams terraform output back to the caller line by line as it runs
+- Returns async job IDs for create/delete and buffers logs for polling
 - Persists the terraform workspace (and state file) so destroy works later
 - Tracks in-flight job state so callers can poll progress
 - Exposes virsh-backed endpoints for VM listing, details, and power management
@@ -34,8 +34,8 @@ vm-builder-core  (terraform + libvirt provisioning)
 
 | Method   | Path                  | Description                              |
 |----------|-----------------------|------------------------------------------|
-| `POST`   | `/vm/create`          | Provision a new VM (streams output)      |
-| `DELETE` | `/vm/:name`           | Destroy a VM (streams output)            |
+| `POST`   | `/vm/create`          | Provision a new VM (returns `job_id`)    |
+| `DELETE` | `/vm/:name`           | Destroy a VM (returns `job_id`)          |
 | `GET`    | `/vm`                 | List all VMs via virsh                   |
 | `GET`    | `/vm/:name`           | VM details + creation params             |
 | `POST`   | `/vm/:name/start`     | Power on a VM                            |
@@ -43,6 +43,20 @@ vm-builder-core  (terraform + libvirt provisioning)
 | `GET`    | `/jobs/:id`           | Job status and buffered log output       |
 | `GET`    | `/node`               | Hypervisor node info                     |
 | `GET`    | `/health`             | Uptime and active job count              |
+
+All API responses are JSON with `Content-Type: application/json`. Error responses use:
+
+```json
+{"error":"message"}
+```
+
+Create and delete are asynchronous. They return immediately with:
+
+```json
+{"job_id":"7f3a9c12d4e8b6a1"}
+```
+
+Clients should then poll `GET /jobs/{id}` for status and buffered logs. Job responses use stable snake_case fields such as `job_id`, `vm_name`, `start_time`, `end_time`, `error_code`, and `log`, with `status` values of `pending`, `running`, `done`, or `failed`.
 
 ## Related
 

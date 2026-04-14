@@ -43,22 +43,22 @@ type VMParams struct {
 	// vm_cpu_count (default 2)
 	CPU int `json:"cpu"`
 	// vm_memory_size_gib (default 4)
-	MemoryGiB int `json:"memoryGib"`
+	MemoryGiB int `json:"memory_gib"`
 	// vm_disk_sizes_gib — first element is root disk, remainder are data disks.
 	// Max 8 disks. Default [48].
-	DisksGiB []int `json:"disksGib"`
+	DisksGiB []int `json:"disks_gib"`
 	// vm_cloud_image_url
-	CloudImageURL string `json:"cloudImageUrl"`
+	CloudImageURL string `json:"cloud_image_url"`
 	// vm_console_user
-	ConsoleUser string `json:"consoleUser"`
+	ConsoleUser string `json:"console_user"`
 	// vm_console_password
-	ConsolePassword string `json:"consolePassword"`
+	ConsolePassword string `json:"console_password"`
 	// vm_automation_user
-	AutomationUser string `json:"automationUser"`
+	AutomationUser string `json:"automation_user"`
 	// vm_automation_user_pubkey
-	AutomationUserPubkey string `json:"automationUserPubkey"`
+	AutomationUserPubkey string `json:"automation_user_pubkey"`
 	// pci_devices — list of PCI bus numbers for passthrough (e.g. GPU).
-	PCIDevices []int `json:"pciDevices"`
+	PCIDevices []int `json:"pci_devices"`
 }
 
 // applyDefaults fills in zero values with the same defaults as variables.tf so
@@ -471,13 +471,13 @@ func (r *Runner) emit(job *jobs.Job, w io.Writer, line string) {
 type PublicVMParams struct {
 	Name                 string `json:"name"`
 	CPU                  int    `json:"cpu"`
-	MemoryGiB            int    `json:"memoryGib"`
-	DisksGiB             []int  `json:"disksGib"`
-	CloudImageURL        string `json:"cloudImageUrl"`
-	ConsoleUser          string `json:"consoleUser"`
-	AutomationUser       string `json:"automationUser"`
-	AutomationUserPubkey string `json:"automationUserPubkey"`
-	PCIDevices           []int  `json:"pciDevices"`
+	MemoryGiB            int    `json:"memory_gib"`
+	DisksGiB             []int  `json:"disks_gib"`
+	CloudImageURL        string `json:"cloud_image_url"`
+	ConsoleUser          string `json:"console_user"`
+	AutomationUser       string `json:"automation_user"`
+	AutomationUserPubkey string `json:"automation_user_pubkey"`
+	PCIDevices           []int  `json:"pci_devices"`
 }
 
 // WorkspaceParams reads the terraform.tfvars from the named VM's workspace and
