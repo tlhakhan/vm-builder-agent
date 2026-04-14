@@ -20,14 +20,15 @@ var version = "dev"
 
 func main() {
 	// ── flags ──────────────────────────────────────────────────────────────
-	listenAddr   := flag.String("listen", ":8443", "address to listen on")
-	agentMTLS    := flag.Bool("agent-mtls", false, "enable mTLS for the agent listener (requires --agent-trusted-ca-url)")
-	agentCAURL   := flag.String("agent-trusted-ca-url", "", "URL to the CA certificate used to verify agent client certificates")
-	privateDir   := flag.String("private-dir", "/etc/vm-builder-agent/private", "directory where the agent stores its self-signed TLS certificate and private key")
-	clientCN     := flag.String("agent-authorized-client-cn", "vm-builder-apiserver", "expected client certificate CN for agent mTLS, signed by the trusted CA")
-	coreRepo     := flag.String("core-repo", "", "git URL for vm-builder-core (required)")
-	terraformBin  := flag.String("terraform", "tofu", "terraform/opentofu binary name or path")
-	workspacesDir := flag.String("workspaces-dir", "/var/lib/vm-builder-agent/workspaces", "directory where per-VM terraform workspaces are kept")
+	listenAddr      := flag.String("listen", ":8443", "address to listen on")
+	agentMTLS       := flag.Bool("agent-mtls", false, "enable mTLS for the agent listener (requires --agent-trusted-ca-url)")
+	agentCAURL      := flag.String("agent-trusted-ca-url", "", "URL to the CA certificate used to verify agent client certificates")
+	privateDir      := flag.String("private-dir", "/etc/vm-builder-agent/private", "directory where the agent stores its self-signed TLS certificate and private key")
+	clientCN        := flag.String("agent-authorized-client-cn", "vm-builder-apiserver", "expected client certificate CN for agent mTLS, signed by the trusted CA")
+	coreRepo        := flag.String("core-repo", "", "git URL for vm-builder-core (required)")
+	terraformBin    := flag.String("terraform", "tofu", "terraform/opentofu binary name or path")
+	workspacesDir   := flag.String("workspaces-dir", "/var/lib/vm-builder-agent/workspaces", "directory where per-VM terraform workspaces are kept")
+	cloudImageCache := flag.String("cloud-image-cache-dir", "/var/lib/vm-builder-agent/cloud-image-cache", "directory where cloud images are cached to avoid repeated downloads")
 	flag.Parse()
 
 	if *coreRepo == "" {
@@ -52,15 +53,17 @@ func main() {
 		"core_repo", *coreRepo,
 		"terraform_bin", *terraformBin,
 		"workspaces_dir", *workspacesDir,
+		"cloud_image_cache_dir", *cloudImageCache,
 	)
 
 	// ── dependencies ───────────────────────────────────────────────────────
 	tracker := jobs.NewTracker()
 
 	r := runner.New(runner.Config{
-		CoreRepoURL:   *coreRepo,
-		TerraformBin:  *terraformBin,
-		WorkspacesDir: *workspacesDir,
+		CoreRepoURL:        *coreRepo,
+		TerraformBin:       *terraformBin,
+		WorkspacesDir:      *workspacesDir,
+		CloudImageCacheDir: *cloudImageCache,
 	})
 
 	srv, err := server.New(server.Config{

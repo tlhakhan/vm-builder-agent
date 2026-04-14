@@ -59,6 +59,7 @@ journalctl -u vm-builder-agent -f
 | `--core-repo` | _(required)_ | Git URL for vm-builder-core |
 | `--terraform` | `tofu` | Terraform/OpenTofu binary name or path |
 | `--workspaces-dir` | `/var/lib/vm-builder-agent/workspaces` | Directory where per-VM Terraform workspaces are kept |
+| `--cloud-image-cache-dir` | `/var/lib/vm-builder-agent/cloud-image-cache` | Directory where cloud images are cached to avoid repeated downloads |
 
 ---
 

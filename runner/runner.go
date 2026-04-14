@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +30,9 @@ type Config struct {
 	// WorkspacesDir is the root directory under which per-VM terraform
 	// workspaces are created and persisted (e.g. /var/lib/vm-builder-agent/workspaces).
 	WorkspacesDir string
+	// CloudImageCacheDir is where cloud images are cached so that subsequent
+	// VM creates with the same image skip re-downloading.
+	CloudImageCacheDir string
 }
 
 // VMParams is the decoded request body for a VM create operation.
@@ -98,13 +103,17 @@ type Runner struct {
 
 	mu      sync.Mutex
 	vmLocks map[string]*sync.Mutex
+
+	cacheMu    sync.Mutex
+	imageLocks map[string]*sync.Mutex
 }
 
 // New returns a Runner with the given config.
 func New(cfg Config) *Runner {
 	return &Runner{
-		cfg:     cfg,
-		vmLocks: make(map[string]*sync.Mutex),
+		cfg:        cfg,
+		vmLocks:    make(map[string]*sync.Mutex),
+		imageLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -147,6 +156,12 @@ func (r *Runner) LockVM(vmName string) (unlock func(), err error) {
 // that terraform state persists for a future destroy.
 func (r *Runner) Create(ctx context.Context, job *jobs.Job, params VMParams, w io.Writer) error {
 	params.applyDefaults()
+
+	cachedURL, err := r.cacheCloudImage(ctx, job, params.CloudImageURL, w)
+	if err != nil {
+		return fmt.Errorf("cache cloud image: %w", err)
+	}
+	params.CloudImageURL = cachedURL
 
 	workDir, err := r.prepareWorkspace(ctx, job, params.Name, w)
 	if err != nil {
@@ -201,6 +216,143 @@ func (r *Runner) Destroy(ctx context.Context, job *jobs.Job, vmName string, w io
 
 	r.removeWorkspace(workDir, job)
 	return nil
+}
+
+// cacheCloudImage ensures the cloud image at rawURL is present in the cache
+// directory and returns a file:// URL pointing to the cached copy. If the image
+// is already cached the function returns immediately. Concurrent requests for
+// the same image are serialized so the image is only downloaded once.
+func (r *Runner) cacheCloudImage(ctx context.Context, job *jobs.Job, rawURL string, w io.Writer) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse cloud image URL: %w", err)
+	}
+
+	filename := filepath.Base(u.Path)
+	if filename == "" || filename == "." {
+		return "", fmt.Errorf("cannot determine filename from cloud image URL %q", rawURL)
+	}
+
+	cachePath := filepath.Join(r.cfg.CloudImageCacheDir, filename)
+
+	// Fast path: already cached — no lock needed for a stat check.
+	if _, err := os.Stat(cachePath); err == nil {
+		r.emit(job, w, fmt.Sprintf("=== cloud image cache hit: %s ===\n", cachePath))
+		return "file://" + cachePath, nil
+	}
+
+	// Serialize concurrent downloads/copies of the same image.
+	r.cacheMu.Lock()
+	l, ok := r.imageLocks[filename]
+	if !ok {
+		l = &sync.Mutex{}
+		r.imageLocks[filename] = l
+	}
+	r.cacheMu.Unlock()
+
+	l.Lock()
+	defer l.Unlock()
+
+	// Re-check after acquiring the lock — a concurrent goroutine may have
+	// already populated the cache.
+	if _, err := os.Stat(cachePath); err == nil {
+		r.emit(job, w, fmt.Sprintf("=== cloud image cache hit: %s ===\n", cachePath))
+		return "file://" + cachePath, nil
+	}
+
+	if err := os.MkdirAll(r.cfg.CloudImageCacheDir, 0o750); err != nil {
+		return "", fmt.Errorf("create cloud image cache dir: %w", err)
+	}
+
+	r.emit(job, w, fmt.Sprintf("=== caching cloud image %s → %s ===\n", rawURL, cachePath))
+
+	switch u.Scheme {
+	case "file":
+		if err := cacheFromFile(u.Path, cachePath); err != nil {
+			return "", fmt.Errorf("cache cloud image from file: %w", err)
+		}
+	case "http", "https":
+		if err := cacheFromHTTP(ctx, rawURL, cachePath); err != nil {
+			return "", fmt.Errorf("cache cloud image from HTTP: %w", err)
+		}
+	default:
+		return "", fmt.Errorf("unsupported cloud image URL scheme %q", u.Scheme)
+	}
+
+	r.emit(job, w, fmt.Sprintf("=== cloud image cached at %s ===\n", cachePath))
+	return "file://" + cachePath, nil
+}
+
+// cacheFromFile copies (or hard-links) a local file into the cache using an
+// atomic temp-file + rename pattern so a partial write is never visible.
+func cacheFromFile(src, dst string) error {
+	tmp := dst + ".tmp"
+
+	// Prefer a hard link — instant and uses no extra space when on the same
+	// filesystem.
+	if err := os.Link(src, tmp); err == nil {
+		return os.Rename(tmp, dst)
+	}
+
+	// Fall back to a full copy (cross-device or unsupported filesystem).
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+// cacheFromHTTP downloads a remote image into the cache using an atomic
+// temp-file + rename pattern so a partial download is never visible.
+func cacheFromHTTP(ctx context.Context, rawURL, dst string) error {
+	tmp := dst + ".tmp"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, rawURL)
+	}
+
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 // workspaceDir returns the canonical workspace path for a given VM name.

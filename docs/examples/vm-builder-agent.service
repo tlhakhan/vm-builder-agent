@@ -6,16 +6,18 @@ Wants=network-online.target
 Requires=libvirtd.service
 
 [Service]
-ExecStartPre=mkdir -p /var/lib/vm-builder-agent/workspaces
-ExecStartPre=mkdir -p /etc/vm-builder-agent/private
+ExecStartPre=/bin/mkdir -p /var/lib/vm-builder-agent/workspaces
+ExecStartPre=/bin/mkdir -p /var/lib/vm-builder-agent/cloud-image-cache
+ExecStartPre=/bin/mkdir -p /etc/vm-builder-agent/private
 ExecStart=/usr/local/bin/vm-builder-agent \
-  --listen         :8443 \
+  --listen                :8443 \
   --agent-mtls \
-  --agent-trusted-ca-url https://pki.example.internal/vm-builder-ca.crt \
-  --private-dir    /etc/vm-builder-agent/private \
-  --core-repo      https://github.com/tlhakhan/vm-builder-core \
-  --terraform      terraform \
-  --workspaces-dir /var/lib/vm-builder-agent/workspaces
+  --agent-trusted-ca-url  https://pki.example.internal/vm-builder-ca.crt \
+  --private-dir           /etc/vm-builder-agent/private \
+  --core-repo             https://github.com/tlhakhan/vm-builder-core \
+  --terraform             tofu \
+  --workspaces-dir        /var/lib/vm-builder-agent/workspaces \
+  --cloud-image-cache-dir /var/lib/vm-builder-agent/cloud-image-cache
 
 Restart=on-failure
 RestartSec=5s
