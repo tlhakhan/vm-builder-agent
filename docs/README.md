@@ -26,17 +26,14 @@ Install it on the hypervisor:
 # copy the binary
 sudo cp vm-builder-agent /usr/local/bin/vm-builder-agent
 
-# create the private directory (agent generates its TLS cert/key here on first start)
-sudo mkdir -p /etc/vm-builder-agent/private
-
-# create the workspaces directory
-sudo mkdir -p /var/lib/vm-builder-agent/workspaces
-
 # install and enable the service
 sudo cp docs/examples/vm-builder-agent.service /etc/systemd/system/vm-builder-agent.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now vm-builder-agent
 ```
+
+> The service's `ExecStartPre` directives create all required directories
+> (`workspaces`, `cloud-image-cache`, `private`) on first start.
 
 Check status and logs:
 
@@ -104,7 +101,7 @@ curl -s http://localhost:8080/vm | jq
 Cloud images can be downloaded from [https://cloud-images.ubuntu.com](https://cloud-images.ubuntu.com).
 
 ```bash
-curl -s -N -X POST http://localhost:8080/vm/create \
+curl -s -X POST http://localhost:8080/vm/create \
   -H 'Content-Type: application/json' \
   -d '{
     "name":                   "ubuntu-0",
@@ -120,17 +117,13 @@ curl -s -N -X POST http://localhost:8080/vm/create \
   }'
 ```
 
-The response streams terraform output line by line. The first line is the job ID:
+The request blocks until terraform completes and returns JSON with the combined command output:
 
-```
-job_id: 4a3f9c1d2e8b7f6a
-
-=== cloning https://github.com/tlhakhan/vm-builder-core into ~/vm-builder-workspaces/ubuntu-0 ===
-...
-DONE
+```json
+{"name":"ubuntu-0","output":"...terraform output..."}
 ```
 
-A duplicate create for `intel` while one is in flight, or after a successful create without a prior delete, returns `409 Conflict`.
+Creating a VM that already exists returns `409 Conflict`.
 
 ### Get VM details
 
@@ -155,19 +148,10 @@ curl -s -X POST http://localhost:8080/vm/ubuntu-0/start | jq
 ### Delete a VM
 
 ```bash
-curl -s -N -X DELETE http://localhost:8080/vm/ubuntu-0
+curl -s -X DELETE http://localhost:8080/vm/ubuntu-0 | jq
 ```
 
-Streams terraform destroy output. Workspace is removed on success.
-
-### Get job status
-
-Every create and delete returns a `job_id` on the first line of the stream.
-Poll it after the fact:
-
-```bash
-curl -s http://localhost:8080/jobs/<job_id> | jq
-```
+Blocks until terraform destroy completes. Returns JSON with command output. Workspace is removed on success.
 
 ### Health check
 
@@ -283,7 +267,7 @@ curl -s $CURL_TLS $BASE/vm | jq
 Cloud images can be downloaded from [https://cloud-images.ubuntu.com](https://cloud-images.ubuntu.com).
 
 ```bash
-curl -s -N $CURL_TLS -X POST $BASE/vm/create \
+curl -s $CURL_TLS -X POST $BASE/vm/create \
   -H 'Content-Type: application/json' \
   -d '{
     "name":                   "ubuntu-0",
@@ -320,7 +304,7 @@ curl -s -X POST $CURL_TLS $BASE/vm/ubuntu-0/start | jq
 ### Delete a VM
 
 ```bash
-curl -s -N $CURL_TLS -X DELETE $BASE/vm/ubuntu-0
+curl -s -X DELETE $CURL_TLS $BASE/vm/ubuntu-0 | jq
 ```
 
 ### Verify CN enforcement
