@@ -3,7 +3,6 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -17,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"text/template"
-
-	"github.com/tlhakhan/vm-builder-agent/jobs"
 )
 
 // Config holds the parameters the runner needs at startup.
@@ -125,6 +122,14 @@ func (e ErrVMLocked) Error() string {
 	return fmt.Sprintf("VM %q is already being modified by another operation", e.VMName)
 }
 
+// ErrVMExists is returned when a create is requested for a VM whose workspace
+// already exists, indicating it was previously created and not yet destroyed.
+type ErrVMExists struct{ VMName string }
+
+func (e ErrVMExists) Error() string {
+	return fmt.Sprintf("VM %q already exists — delete it before recreating", e.VMName)
+}
+
 // WorkspaceExists reports whether a named workspace directory already exists
 // on disk, indicating the VM was previously created and not yet destroyed.
 func (r *Runner) WorkspaceExists(vmName string) bool {
@@ -132,11 +137,9 @@ func (r *Runner) WorkspaceExists(vmName string) bool {
 	return err == nil
 }
 
-// LockVM attempts to acquire the per-VM mutex without blocking. Call this in
-// the HTTP handler before writing any response headers so that a 409 can still
-// be returned. Returns the unlock function on success, or ErrVMLocked if the
-// VM already has an operation in flight.
-func (r *Runner) LockVM(vmName string) (unlock func(), err error) {
+// lockVM attempts to acquire the per-VM mutex without blocking. Returns the
+// unlock function on success, or ErrVMLocked if already held.
+func (r *Runner) lockVM(vmName string) (unlock func(), err error) {
 	r.mu.Lock()
 	l, ok := r.vmLocks[vmName]
 	if !ok {
@@ -151,81 +154,161 @@ func (r *Runner) LockVM(vmName string) (unlock func(), err error) {
 	return l.Unlock, nil
 }
 
-// Create clones vm-builder-core into the VM's named workspace, writes tfvars,
-// then runs terraform init + apply. The workspace is kept after completion so
-// that terraform state persists for a future destroy.
-func (r *Runner) Create(ctx context.Context, job *jobs.Job, params VMParams, w io.Writer) error {
+// Create caches the cloud image, clones vm-builder-core into the VM's workspace,
+// writes tfvars, then runs terraform init + apply. Blocks until complete.
+// The workspace is kept after completion so terraform state persists for destroy.
+// Returns accumulated command output regardless of success or failure.
+func (r *Runner) Create(ctx context.Context, params VMParams) (string, error) {
 	params.applyDefaults()
 
-	cachedURL, err := r.cacheCloudImage(ctx, job, params.CloudImageURL, w)
+	unlock, err := r.lockVM(params.Name)
 	if err != nil {
-		return fmt.Errorf("cache cloud image: %w", err)
+		return "", err
+	}
+	defer unlock()
+
+	cachedURL, err := r.cacheCloudImage(ctx, params.CloudImageURL)
+	if err != nil {
+		return "", fmt.Errorf("cache cloud image: %w", err)
 	}
 	params.CloudImageURL = cachedURL
 
-	workDir, err := r.prepareWorkspace(ctx, job, params.Name, w)
+	workDir, cloneOut, err := r.prepareWorkspace(ctx, params.Name)
+	if err != nil {
+		return cloneOut, err
+	}
+
+	if err := r.writeTFVars(workDir, params); err != nil {
+		return cloneOut, fmt.Errorf("write tfvars: %w", err)
+	}
+
+	slog.Info("terraform init", "vm_name", params.Name)
+	initOut, err := r.runCmd(ctx, workDir, r.cfg.TerraformBin, "init", "-no-color")
+	output := cloneOut + initOut
+	if err != nil {
+		return output, fmt.Errorf("terraform init: %w", err)
+	}
+
+	slog.Info("terraform apply", "vm_name", params.Name)
+	applyOut, err := r.runCmd(ctx, workDir, r.cfg.TerraformBin, "apply", "-auto-approve", "-no-color")
+	output += applyOut
+	if err != nil {
+		return output, fmt.Errorf("terraform apply: %w", err)
+	}
+
+	slog.Info("workspace kept", "path", workDir)
+	return output, nil
+}
+
+// Destroy runs terraform destroy against the VM's existing workspace so that
+// the state file from the original create is available. The workspace is
+// removed after a successful destroy. Blocks until complete.
+// Returns accumulated command output regardless of success or failure.
+func (r *Runner) Destroy(ctx context.Context, vmName string) (string, error) {
+	unlock, err := r.lockVM(vmName)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	workDir := r.workspaceDir(vmName)
+	if _, err := os.Stat(workDir); os.IsNotExist(err) {
+		return "", fmt.Errorf("workspace not found for VM %q at %s — was it created by this agent?", vmName, workDir)
+	}
+
+	slog.Info("terraform init", "vm_name", vmName)
+	initOut, err := r.runCmd(ctx, workDir, r.cfg.TerraformBin, "init", "-no-color")
+	output := initOut
+	if err != nil {
+		return output, fmt.Errorf("terraform init: %w", err)
+	}
+
+	slog.Info("terraform destroy", "vm_name", vmName)
+	destroyOut, err := r.runCmd(ctx, workDir, r.cfg.TerraformBin, "destroy", "-auto-approve", "-no-color")
+	output += destroyOut
+	if err != nil {
+		return output, fmt.Errorf("terraform destroy: %w", err)
+	}
+
+	slog.Info("removing workspace", "path", workDir)
+	if err := os.RemoveAll(workDir); err != nil {
+		slog.Error("failed to remove workspace", "path", workDir, "err", err)
+	}
+	return output, nil
+}
+
+// workspaceDir returns the canonical workspace path for a given VM name.
+func (r *Runner) workspaceDir(vmName string) string {
+	return filepath.Join(r.cfg.WorkspacesDir, vmName)
+}
+
+// prepareWorkspace creates a fresh workspace directory and clones vm-builder-core
+// into it. Returns ErrVMExists if a workspace already exists for this VM name.
+func (r *Runner) prepareWorkspace(ctx context.Context, vmName string) (workDir string, output string, err error) {
+	workDir = r.workspaceDir(vmName)
+
+	if _, err = os.Stat(workDir); err == nil {
+		return "", "", ErrVMExists{VMName: vmName}
+	}
+
+	if err = os.MkdirAll(workDir, 0o750); err != nil {
+		return "", "", fmt.Errorf("create workspace dir: %w", err)
+	}
+
+	slog.Info("cloning core repo", "url", r.cfg.CoreRepoURL, "dir", workDir)
+	output, err = r.runCmd(ctx, workDir, "git", "clone", "--depth=1", r.cfg.CoreRepoURL, ".")
+	if err != nil {
+		os.RemoveAll(workDir)
+		return "", output, fmt.Errorf("git clone: %w", err)
+	}
+
+	return workDir, output, nil
+}
+
+// writeTFVars renders the tfvars template and writes it to the work dir.
+func (r *Runner) writeTFVars(workDir string, params VMParams) error {
+	path := filepath.Join(workDir, "terraform.tfvars")
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	// No cleanup on create — workspace is kept for state persistence.
-
-	if err := r.writeTFVars(workDir, params); err != nil {
-		return fmt.Errorf("write tfvars: %w", err)
-	}
-
-	job.SetPhase(jobs.PhaseInit)
-	r.emit(job, w, "=== terraform init ===\n")
-	if err := r.runCmd(ctx, job, w, workDir, r.cfg.TerraformBin, "init", "-no-color"); err != nil {
-		return fmt.Errorf("terraform init: %w", err)
-	}
-
-	job.SetPhase(jobs.PhaseApplying)
-	r.emit(job, w, "=== terraform apply ===\n")
-	if err := r.runCmd(ctx, job, w, workDir, r.cfg.TerraformBin,
-		"apply", "-auto-approve", "-no-color"); err != nil {
-		return fmt.Errorf("terraform apply: %w", err)
-	}
-
-	r.emit(job, w, fmt.Sprintf("=== workspace kept at %s ===\n", workDir))
-	return nil
+	defer f.Close()
+	return tfvarsTemplate.Execute(f, params)
 }
 
-// Destroy runs terraform destroy against the VM's existing named workspace so
-// that the state file from the original create is available. The workspace is
-// removed after a successful destroy.
-func (r *Runner) Destroy(ctx context.Context, job *jobs.Job, vmName string, w io.Writer) error {
-	workDir := r.workspaceDir(vmName)
+// runCmd runs a single command and returns its combined stdout+stderr output.
+// Returns an error if the command exits non-zero.
+func (r *Runner) runCmd(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
 
-	if _, err := os.Stat(workDir); os.IsNotExist(err) {
-		return fmt.Errorf("workspace not found for VM %q at %s — was it created by this agent?", vmName, workDir)
+	slog.Info("running command", "cmd", name, "args", args, "dir", dir)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s: %w", name, err)
 	}
-
-	job.SetPhase(jobs.PhaseInit)
-	r.emit(job, w, fmt.Sprintf("=== using workspace %s ===\n", workDir))
-	r.emit(job, w, "=== terraform init ===\n")
-	if err := r.runCmd(ctx, job, w, workDir, r.cfg.TerraformBin, "init", "-no-color"); err != nil {
-		return fmt.Errorf("terraform init: %w", err)
-	}
-
-	job.SetPhase(jobs.PhaseDestroying)
-	r.emit(job, w, "=== terraform destroy ===\n")
-	if err := r.runCmd(ctx, job, w, workDir, r.cfg.TerraformBin,
-		"destroy", "-auto-approve", "-no-color"); err != nil {
-		return fmt.Errorf("terraform destroy: %w", err)
-	}
-
-	r.removeWorkspace(workDir, job)
-	return nil
+	return string(out), nil
 }
 
-// cacheCloudImage ensures the cloud image at rawURL is present in the cache
-// directory and returns a file:// URL pointing to the cached copy. If the image
-// is already cached the function returns immediately. Concurrent requests for
-// the same image are serialized so the image is only downloaded once.
-func (r *Runner) cacheCloudImage(ctx context.Context, job *jobs.Job, rawURL string, w io.Writer) (string, error) {
+// cacheCloudImage returns the cloud image URL to use for terraform. For
+// http/https URLs the image is downloaded into the cache directory and a
+// file:// URL pointing to the cached copy is returned. file:// URLs are
+// returned as-is — the local path is used directly with no copying.
+// Concurrent downloads of the same remote URL are serialized.
+func (r *Runner) cacheCloudImage(ctx context.Context, rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("parse cloud image URL: %w", err)
+	}
+
+	// Local file — use as-is, no caching needed.
+	if u.Scheme == "file" {
+		return rawURL, nil
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("unsupported cloud image URL scheme %q", u.Scheme)
 	}
 
 	filename := filepath.Base(u.Path)
@@ -237,11 +320,11 @@ func (r *Runner) cacheCloudImage(ctx context.Context, job *jobs.Job, rawURL stri
 
 	// Fast path: already cached — no lock needed for a stat check.
 	if _, err := os.Stat(cachePath); err == nil {
-		r.emit(job, w, fmt.Sprintf("=== cloud image cache hit: %s ===\n", cachePath))
+		slog.Info("cloud image cache hit", "path", cachePath)
 		return "file://" + cachePath, nil
 	}
 
-	// Serialize concurrent downloads/copies of the same image.
+	// Serialize concurrent downloads of the same image.
 	r.cacheMu.Lock()
 	l, ok := r.imageLocks[filename]
 	if !ok {
@@ -253,10 +336,10 @@ func (r *Runner) cacheCloudImage(ctx context.Context, job *jobs.Job, rawURL stri
 	l.Lock()
 	defer l.Unlock()
 
-	// Re-check after acquiring the lock — a concurrent goroutine may have
+	// Re-check after acquiring the lock — another goroutine may have
 	// already populated the cache.
 	if _, err := os.Stat(cachePath); err == nil {
-		r.emit(job, w, fmt.Sprintf("=== cloud image cache hit: %s ===\n", cachePath))
+		slog.Info("cloud image cache hit", "path", cachePath)
 		return "file://" + cachePath, nil
 	}
 
@@ -264,58 +347,13 @@ func (r *Runner) cacheCloudImage(ctx context.Context, job *jobs.Job, rawURL stri
 		return "", fmt.Errorf("create cloud image cache dir: %w", err)
 	}
 
-	r.emit(job, w, fmt.Sprintf("=== caching cloud image %s → %s ===\n", rawURL, cachePath))
-
-	switch u.Scheme {
-	case "file":
-		if err := cacheFromFile(u.Path, cachePath); err != nil {
-			return "", fmt.Errorf("cache cloud image from file: %w", err)
-		}
-	case "http", "https":
-		if err := cacheFromHTTP(ctx, rawURL, cachePath); err != nil {
-			return "", fmt.Errorf("cache cloud image from HTTP: %w", err)
-		}
-	default:
-		return "", fmt.Errorf("unsupported cloud image URL scheme %q", u.Scheme)
+	slog.Info("caching cloud image", "url", rawURL, "path", cachePath)
+	if err := cacheFromHTTP(ctx, rawURL, cachePath); err != nil {
+		return "", fmt.Errorf("cache cloud image: %w", err)
 	}
 
-	r.emit(job, w, fmt.Sprintf("=== cloud image cached at %s ===\n", cachePath))
+	slog.Info("cloud image cached", "path", cachePath)
 	return "file://" + cachePath, nil
-}
-
-// cacheFromFile copies (or hard-links) a local file into the cache using an
-// atomic temp-file + rename pattern so a partial write is never visible.
-func cacheFromFile(src, dst string) error {
-	tmp := dst + ".tmp"
-
-	// Prefer a hard link — instant and uses no extra space when on the same
-	// filesystem.
-	if err := os.Link(src, tmp); err == nil {
-		return os.Rename(tmp, dst)
-	}
-
-	// Fall back to a full copy (cross-device or unsupported filesystem).
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-	if err != nil {
-		return err
-	}
-
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, dst)
 }
 
 // cacheFromHTTP downloads a remote image into the cache using an atomic
@@ -355,129 +393,18 @@ func cacheFromHTTP(ctx context.Context, rawURL, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-// workspaceDir returns the canonical workspace path for a given VM name.
-func (r *Runner) workspaceDir(vmName string) string {
-	return filepath.Join(r.cfg.WorkspacesDir, vmName)
-}
-
-// ErrVMExists is returned when a create is requested for a VM whose workspace
-// already exists, indicating it was previously created and not yet destroyed.
-type ErrVMExists struct{ VMName string }
-
-func (e ErrVMExists) Error() string {
-	return fmt.Sprintf("VM %q already exists — delete it before recreating", e.VMName)
-}
-
-// prepareWorkspace creates a fresh workspace directory for the VM and clones
-// vm-builder-core into it. Returns ErrVMExists if a workspace already exists
-// for this VM name.
-func (r *Runner) prepareWorkspace(ctx context.Context, job *jobs.Job, vmName string, w io.Writer) (string, error) {
-	workDir := r.workspaceDir(vmName)
-
-	if _, err := os.Stat(workDir); err == nil {
-		return "", ErrVMExists{VMName: vmName}
-	}
-
-	if err := os.MkdirAll(workDir, 0o750); err != nil {
-		return "", fmt.Errorf("create workspace dir: %w", err)
-	}
-
-	job.SetPhase(jobs.PhaseCloning)
-	r.emit(job, w, fmt.Sprintf("=== cloning %s into %s ===\n", r.cfg.CoreRepoURL, workDir))
-
-	if err := r.runCmd(ctx, job, w, workDir, "git", "clone", "--depth=1", r.cfg.CoreRepoURL, "."); err != nil {
-		os.RemoveAll(workDir)
-		return "", fmt.Errorf("git clone: %w", err)
-	}
-
-	return workDir, nil
-}
-
-// removeWorkspace deletes the workspace directory after a successful destroy.
-func (r *Runner) removeWorkspace(workDir string, job *jobs.Job) {
-	slog.Info("removing workspace", "job_id", job.ID, "path", workDir)
-	if err := os.RemoveAll(workDir); err != nil {
-		slog.Error("failed to remove workspace", "job_id", job.ID, "path", workDir, "err", err)
-	}
-}
-
-// writeTFVars renders the tfvars template and writes it to the work dir.
-func (r *Runner) writeTFVars(workDir string, params VMParams) error {
-	path := filepath.Join(workDir, "terraform.tfvars")
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return tfvarsTemplate.Execute(f, params)
-}
-
-// runCmd runs a single command, streaming its combined stdout+stderr to w and
-// the job log line by line. Returns an error if the command exits non-zero.
-//
-// stdout and stderr are merged via an io.Pipe so that both streams appear in
-// the correct order without interleaving issues from separate goroutines.
-func (r *Runner) runCmd(ctx context.Context, job *jobs.Job, w io.Writer, dir, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-
-	slog.Info("running command", "job_id", job.ID, "cmd", name, "args", args, "dir", dir)
-
-	// Merge stdout and stderr into a single pipe.
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
-
-	if err := cmd.Start(); err != nil {
-		pr.Close()
-		pw.Close()
-		return fmt.Errorf("start %s: %w", name, err)
-	}
-
-	// Close the write end once the process exits so the scanner sees EOF.
-	waitErr := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		pw.Close()
-		waitErr <- err
-	}()
-
-	scanner := bufio.NewScanner(pr)
-	for scanner.Scan() {
-		r.emit(job, w, scanner.Text()+"\n")
-	}
-	pr.Close()
-
-	if err := <-waitErr; err != nil {
-		return fmt.Errorf("%s exited: %w", name, err)
-	}
-	return nil
-}
-
-// emit writes a line to both the HTTP response writer and the job's log buffer,
-// then flushes the response if the writer supports it.
-func (r *Runner) emit(job *jobs.Job, w io.Writer, line string) {
-	job.AppendLog(line)
-	if _, err := io.WriteString(w, line); err != nil {
-		slog.Warn("failed to write to response", "job_id", job.ID, "err", err)
-	}
-	if f, ok := w.(interface{ Flush() }); ok {
-		f.Flush()
-	}
-}
-
 // PublicVMParams is a view of VMParams with sensitive fields omitted, safe for
 // inclusion in API responses.
 type PublicVMParams struct {
 	Name                 string `json:"name"`
 	CPU                  int    `json:"cpu"`
-	MemoryGiB            int    `json:"memory_gib"`
-	DisksGiB             []int  `json:"disks_gib"`
-	CloudImageURL        string `json:"cloud_image_url"`
-	ConsoleUser          string `json:"console_user"`
-	AutomationUser       string `json:"automation_user"`
-	AutomationUserPubkey string `json:"automation_user_pubkey"`
-	PCIDevices           []int  `json:"pci_devices"`
+	MemoryGiB            int    `json:"memoryGib"`
+	DisksGiB             []int  `json:"disksGib"`
+	CloudImageURL        string `json:"cloudImageUrl"`
+	ConsoleUser          string `json:"consoleUser"`
+	AutomationUser       string `json:"automationUser"`
+	AutomationUserPubkey string `json:"automationUserPubkey"`
+	PCIDevices           []int  `json:"pciDevices"`
 }
 
 // WorkspaceParams reads the terraform.tfvars from the named VM's workspace and

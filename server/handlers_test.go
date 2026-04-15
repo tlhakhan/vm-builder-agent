@@ -10,14 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/tlhakhan/vm-builder-agent/jobs"
 	"github.com/tlhakhan/vm-builder-agent/runner"
 )
 
-func TestCreateVMReturnsJSONJobID(t *testing.T) {
-	h, tracker, env := newTestHandlers(t)
+func TestCreateVMReturnsOK(t *testing.T) {
+	h, env := newTestHandlers(t)
 
 	body := bytes.NewBufferString(`{
 		"name":"vm-create",
@@ -38,29 +36,21 @@ func TestCreateVMReturnsJSONJobID(t *testing.T) {
 	h.createVM(rec, req)
 
 	if got := rec.Code; got != http.StatusOK {
-		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+		t.Fatalf("status = %d, want %d\nbody: %s", got, http.StatusOK, rec.Body.String())
 	}
 	assertJSONContentType(t, rec)
 
 	var resp struct {
-		JobID string `json:"job_id"`
+		Name string `json:"name"`
 	}
 	decodeJSON(t, rec, &resp)
-	if resp.JobID == "" {
-		t.Fatal("expected non-empty job_id")
-	}
-
-	job := waitForJob(t, tracker, resp.JobID)
-	if job.Err != "" {
-		t.Fatalf("job failed unexpectedly: %s", job.Err)
-	}
-	if job.Log == "" {
-		t.Fatal("expected buffered job log to be preserved")
+	if resp.Name != "vm-create" {
+		t.Fatalf("name = %q, want %q", resp.Name, "vm-create")
 	}
 }
 
-func TestDeleteVMReturnsJSONJobID(t *testing.T) {
-	h, tracker, env := newTestHandlers(t)
+func TestDeleteVMReturnsOK(t *testing.T) {
+	h, env := newTestHandlers(t)
 
 	vmName := "vm-delete"
 	if err := os.MkdirAll(filepath.Join(env.workspacesDir, vmName), 0o755); err != nil {
@@ -74,29 +64,25 @@ func TestDeleteVMReturnsJSONJobID(t *testing.T) {
 	h.deleteVM(rec, req)
 
 	if got := rec.Code; got != http.StatusOK {
-		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+		t.Fatalf("status = %d, want %d\nbody: %s", got, http.StatusOK, rec.Body.String())
 	}
 	assertJSONContentType(t, rec)
 
 	var resp struct {
-		JobID string `json:"job_id"`
+		Name string `json:"name"`
 	}
 	decodeJSON(t, rec, &resp)
-	if resp.JobID == "" {
-		t.Fatal("expected non-empty job_id")
+	if resp.Name != vmName {
+		t.Fatalf("name = %q, want %q", resp.Name, vmName)
 	}
 
-	job := waitForJob(t, tracker, resp.JobID)
-	if job.Err != "" {
-		t.Fatalf("job failed unexpectedly: %s", job.Err)
-	}
 	if _, err := os.Stat(filepath.Join(env.workspacesDir, vmName)); !os.IsNotExist(err) {
 		t.Fatalf("expected workspace to be removed, stat err = %v", err)
 	}
 }
 
 func TestListVMsReturnsEmptyArrayNotNull(t *testing.T) {
-	h, _, env := newTestHandlers(t)
+	h, env := newTestHandlers(t)
 	if err := os.WriteFile(env.virshListPath, []byte(" Id   Name   State\n--------------------\n"), 0o644); err != nil {
 		t.Fatalf("write virsh list fixture: %v", err)
 	}
@@ -121,96 +107,8 @@ func TestListVMsReturnsEmptyArrayNotNull(t *testing.T) {
 	}
 }
 
-func TestGetJobReturnsJSONStatusAndLog(t *testing.T) {
-	tracker := jobs.NewTracker()
-	job := &jobs.Job{
-		ID:        "job-123",
-		VMName:    "vm-1",
-		Action:    "create",
-		Phase:     jobs.PhaseInit,
-		StartTime: time.Now().UTC(),
-	}
-	job.AppendLog("hello from job")
-	tracker.Add(job)
-
-	h := &handlers{tracker: tracker}
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-123", nil)
-	req.SetPathValue("id", "job-123")
-	rec := httptest.NewRecorder()
-
-	h.getJob(rec, req)
-
-	if got := rec.Code; got != http.StatusOK {
-		t.Fatalf("status = %d, want %d", got, http.StatusOK)
-	}
-	assertJSONContentType(t, rec)
-
-	var resp struct {
-		JobID  string `json:"job_id"`
-		Status string `json:"status"`
-		Log    string `json:"log"`
-		Action string `json:"action"`
-		VMName string `json:"vm_name"`
-	}
-	decodeJSON(t, rec, &resp)
-
-	if resp.JobID != "job-123" {
-		t.Fatalf("job_id = %q, want %q", resp.JobID, "job-123")
-	}
-	if resp.Status != "running" {
-		t.Fatalf("status = %q, want %q", resp.Status, "running")
-	}
-	if !strings.Contains(resp.Log, "hello from job") {
-		t.Fatalf("log = %q, want to contain job output", resp.Log)
-	}
-	if resp.Action != "create" || resp.VMName != "vm-1" {
-		t.Fatalf("unexpected action/vm_name: %+v", resp)
-	}
-}
-
-func TestGetJobDifferentiatesDuplicateFromGenericFailure(t *testing.T) {
-	tracker := jobs.NewTracker()
-	job := &jobs.Job{
-		ID:        "job-duplicate",
-		VMName:    "vm-dup",
-		Action:    "create",
-		Phase:     jobs.PhaseInit,
-		StartTime: time.Now().UTC(),
-	}
-	job.FinishWithCode(runner.ErrVMExists{VMName: "vm-dup"}, jobs.ErrorCodeDuplicate)
-	tracker.Add(job)
-
-	h := &handlers{tracker: tracker}
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-duplicate", nil)
-	req.SetPathValue("id", "job-duplicate")
-	rec := httptest.NewRecorder()
-
-	h.getJob(rec, req)
-
-	if got := rec.Code; got != http.StatusOK {
-		t.Fatalf("status = %d, want %d", got, http.StatusOK)
-	}
-
-	var resp struct {
-		Status    string `json:"status"`
-		Error     string `json:"error"`
-		ErrorCode string `json:"error_code"`
-	}
-	decodeJSON(t, rec, &resp)
-
-	if resp.Status != "failed" {
-		t.Fatalf("status = %q, want %q", resp.Status, "failed")
-	}
-	if resp.ErrorCode != jobs.ErrorCodeDuplicate {
-		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, jobs.ErrorCodeDuplicate)
-	}
-	if resp.Error == "" {
-		t.Fatal("expected error message for duplicate job")
-	}
-}
-
 func TestGetVMUsesSnakeCaseFields(t *testing.T) {
-	h, _, env := newTestHandlers(t)
+	h, env := newTestHandlers(t)
 
 	vmName := "vm-info"
 	workspaceDir := filepath.Join(env.workspacesDir, vmName)
@@ -271,7 +169,7 @@ pci_devices               = [1, 2]
 }
 
 func TestStartAndShutdownReturnJSONSuccessObjects(t *testing.T) {
-	h, _, _ := newTestHandlers(t)
+	h, _ := newTestHandlers(t)
 
 	for _, tc := range []struct {
 		name   string
@@ -295,12 +193,11 @@ func TestStartAndShutdownReturnJSONSuccessObjects(t *testing.T) {
 			assertJSONContentType(t, rec)
 
 			var resp struct {
-				OK      bool   `json:"ok"`
 				Name    string `json:"name"`
 				Message string `json:"message"`
 			}
 			decodeJSON(t, rec, &resp)
-			if !resp.OK || resp.Name != "vm-1" {
+			if resp.Name != "vm-1" {
 				t.Fatalf("unexpected response: %+v", resp)
 			}
 			if !strings.Contains(strings.ToLower(resp.Message), tc.wantOK) {
@@ -311,8 +208,7 @@ func TestStartAndShutdownReturnJSONSuccessObjects(t *testing.T) {
 }
 
 func TestErrorResponsesAreJSON(t *testing.T) {
-	h, _, env := newTestHandlers(t)
-	_ = env
+	h, _ := newTestHandlers(t)
 
 	t.Run("create invalid body", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/vm/create", strings.NewReader("{"))
@@ -331,25 +227,6 @@ func TestErrorResponsesAreJSON(t *testing.T) {
 			t.Fatalf("expected error message, got %v", resp)
 		}
 	})
-
-	t.Run("job not found", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/jobs/missing", nil)
-		req.SetPathValue("id", "missing")
-		rec := httptest.NewRecorder()
-
-		h.getJob(rec, req)
-
-		if got := rec.Code; got != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d", got, http.StatusNotFound)
-		}
-		assertJSONContentType(t, rec)
-
-		var resp map[string]string
-		decodeJSON(t, rec, &resp)
-		if resp["error"] != "job not found" {
-			t.Fatalf("error = %q, want %q", resp["error"], "job not found")
-		}
-	})
 }
 
 type testEnv struct {
@@ -359,7 +236,7 @@ type testEnv struct {
 	virshDominfoPath string
 }
 
-func newTestHandlers(t *testing.T) (*handlers, *jobs.Tracker, testEnv) {
+func newTestHandlers(t *testing.T) (*handlers, testEnv) {
 	t.Helper()
 
 	tmp := t.TempDir()
@@ -397,7 +274,6 @@ func newTestHandlers(t *testing.T) (*handlers, *jobs.Tracker, testEnv) {
 	t.Setenv("VIRSH_LIST_FILE", virshListPath)
 	t.Setenv("VIRSH_DOMINFO_FILE", virshDominfoPath)
 
-	tracker := jobs.NewTracker()
 	r := runner.New(runner.Config{
 		CoreRepoURL:        repoDir,
 		TerraformBin:       terraformPath,
@@ -405,7 +281,7 @@ func newTestHandlers(t *testing.T) (*handlers, *jobs.Tracker, testEnv) {
 		CloudImageCacheDir: cacheDir,
 	})
 
-	return &handlers{tracker: tracker, runner: r}, tracker, testEnv{
+	return &handlers{runner: r}, testEnv{
 		workspacesDir:    workspacesDir,
 		imagePath:        imagePath,
 		virshListPath:    virshListPath,
@@ -444,24 +320,6 @@ func writeExecutable(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write executable %s: %v", path, err)
 	}
-}
-
-func waitForJob(t *testing.T, tracker *jobs.Tracker, jobID string) jobs.JobSnapshot {
-	t.Helper()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		job, ok := tracker.Get(jobID)
-		if ok {
-			snap := job.Snapshot()
-			if snap.EndTime != nil {
-				return snap
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for job %s", jobID)
-	return jobs.JobSnapshot{}
 }
 
 func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, dst any) {

@@ -56,4 +56,3 @@ func (lw *loggingResponseWriter) WriteHeader(code int) {
 	lw.status = code
 	lw.ResponseWriter.WriteHeader(code)
 }
-

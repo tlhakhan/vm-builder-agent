@@ -107,16 +107,16 @@ Cloud images can be downloaded from [https://cloud-images.ubuntu.com](https://cl
 curl -s -N -X POST http://localhost:8080/vm/create \
   -H 'Content-Type: application/json' \
   -d '{
-    "name":                 "ubuntu-0",
-    "cpu":                  4,
-    "memoryGib":            8,
-    "disksGib":             [64],
-    "cloudImageUrl":        "file:///home/ubuntu/downloads/noble-server-cloudimg-amd64.img",
-    "consoleUser":          "ubuntu",
-    "consolePassword":      "ubuntu",
-    "automationUser":       "ubuntu",
-    "automationUserPubkey": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDNCeFA0v8d3GQIHmMG1T/CmGieRnqE2Vhwno0qYwgi2PwODbv3sjUFDUHphxLzVjbPf7m7bSRkigVPynfsiV/Ml+Wbt3FgNygy2WGbOJKoSMhKPAwPZwfrpdG/OkO4q+SjBiqFuBYQVcJ47a4+jrj9C6Fbse3fR43/ZxxIZDKCMlIZBC75J2uXHSiwbVYIh/EX2w4unZgO8KyecuRawQCbB3I+LZBKpinnJn+Sb6vJB57GdDlEmVfqPp4nbSDq9xSbtrpoFkniiVxwTsdj9E2xCsfASJywrQeNWVDVnHvHDSxwxBWfmzsfHCJ/N+xDrU0WY6BBoof33ja1+4fhSEZ/LKoLD2H57z18xsgANUHPu1VgUfGn/Wp9BfJ7BYIfD57XufA4IGftFTIcZAGTEFRxEpHQWJ68s5SkN7lyrC3+ph/BJVCS+PnBe78Zjbi0SOdfpzvJQI7/xXVYfOUAVC+undyljKdpHUQpd6BsRmChBEKDnxlupdBVYzJb4mLKlu0=",
-    "pciDevices":           []
+    "name":                   "ubuntu-0",
+    "cpu":                    4,
+    "memory_gib":             8,
+    "disks_gib":              [64],
+    "cloud_image_url":        "file:///home/ubuntu/downloads/noble-server-cloudimg-amd64.img",
+    "console_user":           "ubuntu",
+    "console_password":       "ubuntu",
+    "automation_user":        "ubuntu",
+    "automation_user_pubkey": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDNCeFA0v8d3GQIHmMG1T/CmGieRnqE2Vhwno0qYwgi2PwODbv3sjUFDUHphxLzVjbPf7m7bSRkigVPynfsiV/Ml+Wbt3FgNygy2WGbOJKoSMhKPAwPZwfrpdG/OkO4q+SjBiqFuBYQVcJ47a4+jrj9C6Fbse3fR43/ZxxIZDKCMlIZBC75J2uXHSiwbVYIh/EX2w4unZgO8KyecuRawQCbB3I+LZBKpinnJn+Sb6vJB57GdDlEmVfqPp4nbSDq9xSbtrpoFkniiVxwTsdj9E2xCsfASJywrQeNWVDVnHvHDSxwxBWfmzsfHCJ/N+xDrU0WY6BBoof33ja1+4fhSEZ/LKoLD2H57z18xsgANUHPu1VgUfGn/Wp9BfJ7BYIfD57XufA4IGftFTIcZAGTEFRxEpHQWJ68s5SkN7lyrC3+ph/BJVCS+PnBe78Zjbi0SOdfpzvJQI7/xXVYfOUAVC+undyljKdpHUQpd6BsRmChBEKDnxlupdBVYzJb4mLKlu0=",
+    "pci_devices":            []
   }'
 ```
 
@@ -286,16 +286,16 @@ Cloud images can be downloaded from [https://cloud-images.ubuntu.com](https://cl
 curl -s -N $CURL_TLS -X POST $BASE/vm/create \
   -H 'Content-Type: application/json' \
   -d '{
-    "name":                 "ubuntu-0",
-    "cpu":                  4,
-    "memoryGib":            8,
-    "disksGib":             [64],
-    "cloudImageUrl":        "file:///home/ubuntu/downloads/noble-server-cloudimg-amd64.img",
-    "consoleUser":          "ubuntu",
-    "consolePassword":      "ubuntu",
-    "automationUser":       "ubuntu",
-    "automationUserPubkey": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDNCeFA0v8d3GQIHmMG1T/CmGieRnqE2Vhwno0qYwgi2PwODbv3sjUFDUHphxLzVjbPf7m7bSRkigVPynfsiV/Ml+Wbt3FgNygy2WGbOJKoSMhKPAwPZwfrpdG/OkO4q+SjBiqFuBYQVcJ47a4+jrj9C6Fbse3fR43/ZxxIZDKCMlIZBC75J2uXHSiwbVYIh/EX2w4unZgO8KyecuRawQCbB3I+LZBKpinnJn+Sb6vJB57GdDlEmVfqPp4nbSDq9xSbtrpoFkniiVxwTsdj9E2xCsfASJywrQeNWVDVnHvHDSxwxBWfmzsfHCJ/N+xDrU0WY6BBoof33ja1+4fhSEZ/LKoLD2H57z18xsgANUHPu1VgUfGn/Wp9BfJ7BYIfD57XufA4IGftFTIcZAGTEFRxEpHQWJ68s5SkN7lyrC3+ph/BJVCS+PnBe78Zjbi0SOdfpzvJQI7/xXVYfOUAVC+undyljKdpHUQpd6BsRmChBEKDnxlupdBVYzJb4mLKlu0=",
-    "pciDevices":           []
+    "name":                   "ubuntu-0",
+    "cpu":                    4,
+    "memory_gib":             8,
+    "disks_gib":              [64],
+    "cloud_image_url":        "file:///home/ubuntu/downloads/noble-server-cloudimg-amd64.img",
+    "console_user":           "ubuntu",
+    "console_password":       "ubuntu",
+    "automation_user":        "ubuntu",
+    "automation_user_pubkey": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDNCeFA0v8d3GQIHmMG1T/CmGieRnqE2Vhwno0qYwgi2PwODbv3sjUFDUHphxLzVjbPf7m7bSRkigVPynfsiV/Ml+Wbt3FgNygy2WGbOJKoSMhKPAwPZwfrpdG/OkO4q+SjBiqFuBYQVcJ47a4+jrj9C6Fbse3fR43/ZxxIZDKCMlIZBC75J2uXHSiwbVYIh/EX2w4unZgO8KyecuRawQCbB3I+LZBKpinnJn+Sb6vJB57GdDlEmVfqPp4nbSDq9xSbtrpoFkniiVxwTsdj9E2xCsfASJywrQeNWVDVnHvHDSxwxBWfmzsfHCJ/N+xDrU0WY6BBoof33ja1+4fhSEZ/LKoLD2H57z18xsgANUHPu1VgUfGn/Wp9BfJ7BYIfD57XufA4IGftFTIcZAGTEFRxEpHQWJ68s5SkN7lyrC3+ph/BJVCS+PnBe78Zjbi0SOdfpzvJQI7/xXVYfOUAVC+undyljKdpHUQpd6BsRmChBEKDnxlupdBVYzJb4mLKlu0=",
+    "pci_devices":            []
   }'
 ```
 

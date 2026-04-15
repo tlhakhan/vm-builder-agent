@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/tlhakhan/vm-builder-agent/jobs"
 	"github.com/tlhakhan/vm-builder-agent/runner"
 )
 
@@ -21,9 +20,9 @@ type Config struct {
 }
 
 // New builds an *http.Server with routing and optional mTLS already configured.
-func New(cfg Config, tracker *jobs.Tracker, r *runner.Runner) (*http.Server, error) {
+func New(cfg Config, r *runner.Runner) (*http.Server, error) {
 	mux := http.NewServeMux()
-	h := &handlers{tracker: tracker, runner: r}
+	h := &handlers{runner: r}
 
 	mux.HandleFunc("POST /vm/create", h.createVM)
 	mux.HandleFunc("DELETE /vm/{name}", h.deleteVM)
@@ -31,7 +30,6 @@ func New(cfg Config, tracker *jobs.Tracker, r *runner.Runner) (*http.Server, err
 	mux.HandleFunc("GET /vm/{name}", h.getVM)
 	mux.HandleFunc("POST /vm/{name}/start", h.startVM)
 	mux.HandleFunc("POST /vm/{name}/shutdown", h.shutdownVM)
-	mux.HandleFunc("GET /jobs/{id}", h.getJob)
 	mux.HandleFunc("GET /node", h.nodeInfo)
 	mux.HandleFunc("GET /health", h.health)
 

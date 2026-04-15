@@ -2,11 +2,8 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,22 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tlhakhan/vm-builder-agent/jobs"
 	"github.com/tlhakhan/vm-builder-agent/runner"
 )
 
 type handlers struct {
-	tracker *jobs.Tracker
-	runner  *runner.Runner
-}
-
-// generateID returns a random 8-byte hex string suitable for job IDs.
-func generateID() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	runner *runner.Runner
 }
 
 // writeJSON encodes v as JSON and writes it with the given status code.
@@ -45,42 +31,10 @@ func writeErrorJSON(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-type jobCreatedResponse struct {
-	JobID string `json:"job_id"`
-}
-
-type jobStatusResponse struct {
-	JobID     string     `json:"job_id"`
-	VMName    string     `json:"vm_name,omitempty"`
-	Action    string     `json:"action,omitempty"`
-	Status    string     `json:"status"`
-	Log       string     `json:"log"`
-	StartTime time.Time  `json:"start_time"`
-	EndTime   *time.Time `json:"end_time,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	ErrorCode string     `json:"error_code,omitempty"`
-}
-
-func newJobStatusResponse(job jobs.JobSnapshot) jobStatusResponse {
-	status := "running"
-	switch job.Phase {
-	case jobs.PhaseDone:
-		status = "done"
-	case jobs.PhaseFailed:
-		status = "failed"
-	}
-
-	return jobStatusResponse{
-		JobID:     job.ID,
-		VMName:    job.VMName,
-		Action:    job.Action,
-		Status:    status,
-		Log:       job.Log,
-		StartTime: job.StartTime,
-		EndTime:   job.EndTime,
-		Error:     job.Err,
-		ErrorCode: job.ErrorCode,
-	}
+// vmActionResponse is returned by create and delete endpoints.
+type vmActionResponse struct {
+	Name   string `json:"name"`
+	Output string `json:"output,omitempty"`
 }
 
 // POST /vm/create
@@ -95,61 +49,21 @@ func (h *handlers) createVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.runner.WorkspaceExists(params.Name) {
-		writeErrorJSON(w, http.StatusConflict, runner.ErrVMExists{VMName: params.Name}.Error())
-		return
-	}
-
-	unlock, err := h.runner.LockVM(params.Name)
+	slog.Info("creating VM", "vm_name", params.Name)
+	output, err := h.runner.Create(r.Context(), params)
 	if err != nil {
-		writeErrorJSON(w, http.StatusConflict, err.Error())
-		return
-	}
-	locked := true
-	defer func() {
-		if locked {
-			unlock()
+		var exists runner.ErrVMExists
+		var locked runner.ErrVMLocked
+		if errors.As(err, &exists) || errors.As(err, &locked) {
+			writeErrorJSON(w, http.StatusConflict, err.Error())
+		} else {
+			writeErrorJSON(w, http.StatusInternalServerError, err.Error())
 		}
-	}()
-
-	id, err := generateID()
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to generate job id")
 		return
 	}
 
-	job := &jobs.Job{
-		ID:        id,
-		VMName:    params.Name,
-		Action:    "create",
-		Phase:     jobs.PhaseCloning,
-		StartTime: time.Now(),
-	}
-	h.tracker.Add(job)
-
-	slog.Info("create VM job started", "job_id", id, "vm_name", params.Name)
-	jobCtx := context.WithoutCancel(r.Context())
-	go func(ctx context.Context, job *jobs.Job, params runner.VMParams) {
-		defer unlock()
-		err := h.runner.Create(ctx, job, params, io.Discard)
-
-		if err != nil {
-			var exists runner.ErrVMExists
-			if errors.As(err, &exists) {
-				job.FinishWithCode(err, jobs.ErrorCodeDuplicate)
-				slog.Warn("create rejected: VM already exists", "job_id", id, "vm_name", params.Name)
-			} else {
-				job.FinishWithCode(err, jobs.ErrorCodeCreateFailed)
-				slog.Error("create VM job failed", "job_id", id, "vm_name", params.Name, "err", err)
-			}
-			return
-		}
-		job.Finish(nil)
-		slog.Info("create VM job completed", "job_id", id, "vm_name", params.Name)
-	}(jobCtx, job, params)
-	locked = false
-
-	writeJSON(w, http.StatusOK, jobCreatedResponse{JobID: id})
+	slog.Info("VM created", "vm_name", params.Name)
+	writeJSON(w, http.StatusOK, vmActionResponse{Name: params.Name, Output: output})
 }
 
 // DELETE /vm/{name}
@@ -160,50 +74,20 @@ func (h *handlers) deleteVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	unlock, err := h.runner.LockVM(vmName)
+	slog.Info("deleting VM", "vm_name", vmName)
+	output, err := h.runner.Destroy(r.Context(), vmName)
 	if err != nil {
-		writeErrorJSON(w, http.StatusConflict, err.Error())
-		return
-	}
-	locked := true
-	defer func() {
-		if locked {
-			unlock()
+		var locked runner.ErrVMLocked
+		if errors.As(err, &locked) {
+			writeErrorJSON(w, http.StatusConflict, err.Error())
+		} else {
+			writeErrorJSON(w, http.StatusInternalServerError, err.Error())
 		}
-	}()
-
-	id, err := generateID()
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to generate job id")
 		return
 	}
 
-	job := &jobs.Job{
-		ID:        id,
-		VMName:    vmName,
-		Action:    "delete",
-		Phase:     jobs.PhaseCloning,
-		StartTime: time.Now(),
-	}
-	h.tracker.Add(job)
-
-	slog.Info("delete VM job started", "job_id", id, "vm_name", vmName)
-	jobCtx := context.WithoutCancel(r.Context())
-	go func(ctx context.Context, job *jobs.Job, vmName string) {
-		defer unlock()
-		err := h.runner.Destroy(ctx, job, vmName, io.Discard)
-
-		if err != nil {
-			job.FinishWithCode(err, jobs.ErrorCodeDeleteFailed)
-			slog.Error("delete VM job failed", "job_id", id, "vm_name", vmName, "err", err)
-			return
-		}
-		job.Finish(nil)
-		slog.Info("delete VM job completed", "job_id", id, "vm_name", vmName)
-	}(jobCtx, job, vmName)
-	locked = false
-
-	writeJSON(w, http.StatusOK, jobCreatedResponse{JobID: id})
+	slog.Info("VM deleted", "vm_name", vmName)
+	writeJSON(w, http.StatusOK, vmActionResponse{Name: vmName, Output: output})
 }
 
 // virshVM is one row from virsh list --all.
@@ -270,8 +154,6 @@ func parseVirshList(output string) []virshVM {
 type vmInfo struct {
 	// from virsh dominfo
 	Name       string `json:"name"`
-	ID         string `json:"id"`
-	UUID       string `json:"uuid"`
 	State      string `json:"state"`
 	CPUs       string `json:"cpus"`
 	MaxMemory  string `json:"max_memory"`
@@ -364,8 +246,6 @@ func parseVirshDominfo(output string) vmInfo {
 	}
 	return vmInfo{
 		Name:       fields["Name"],
-		ID:         fields["Id"],
-		UUID:       fields["UUID"],
 		State:      fields["State"],
 		CPUs:       fields["CPU(s)"],
 		MaxMemory:  fields["Max memory"],
@@ -377,7 +257,6 @@ func parseVirshDominfo(output string) vmInfo {
 
 // virshActionResponse is returned by start and shutdown endpoints.
 type virshActionResponse struct {
-	OK      bool   `json:"ok"`
 	Name    string `json:"name"`
 	Message string `json:"message"`
 }
@@ -398,7 +277,6 @@ func (h *handlers) startVM(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("VM started", "vm_name", vmName)
 	writeJSON(w, http.StatusOK, virshActionResponse{
-		OK:      true,
 		Name:    vmName,
 		Message: strings.TrimSpace(string(out)),
 	})
@@ -420,28 +298,15 @@ func (h *handlers) shutdownVM(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("VM shutdown initiated", "vm_name", vmName)
 	writeJSON(w, http.StatusOK, virshActionResponse{
-		OK:      true,
 		Name:    vmName,
 		Message: strings.TrimSpace(string(out)),
 	})
 }
 
-// GET /jobs/{id}
-func (h *handlers) getJob(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	job, ok := h.tracker.Get(id)
-	if !ok {
-		writeErrorJSON(w, http.StatusNotFound, "job not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, newJobStatusResponse(job.Snapshot()))
-}
-
 // healthResponse is the body returned by GET /health.
 type healthResponse struct {
-	Hostname   string `json:"hostname"`
-	UptimeSec  int64  `json:"uptime_sec"`
-	ActiveJobs int    `json:"active_jobs"`
+	Hostname  string `json:"hostname"`
+	UptimeSec int64  `json:"uptime_sec"`
 }
 
 var startTime = time.Now()
@@ -453,8 +318,7 @@ func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
 		hostname = "unknown"
 	}
 	writeJSON(w, http.StatusOK, healthResponse{
-		Hostname:   hostname,
-		UptimeSec:  int64(time.Since(startTime).Seconds()),
-		ActiveJobs: h.tracker.ActiveCount(),
+		Hostname:  hostname,
+		UptimeSec: int64(time.Since(startTime).Seconds()),
 	})
 }
