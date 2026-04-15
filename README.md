@@ -22,9 +22,9 @@ vm-builder-core  (terraform + libvirt provisioning)
 
 - Clones [vm-builder-core](https://github.com/tlhakhan/vm-builder-core) into a per-VM workspace on each create request
 - Writes a `terraform.tfvars` from the request payload and runs `terraform init + apply`
-- Returns async job IDs for create/delete and buffers logs for polling
+- Blocks until the operation completes and returns the result with command output
+- Caches cloud images locally so subsequent creates skip re-downloading
 - Persists the terraform workspace (and state file) so destroy works later
-- Tracks in-flight job state so callers can poll progress
 - Exposes virsh-backed endpoints for VM listing, details, and power management
 - Reports hypervisor node info (CPU, memory, disk, running VMs)
 - Enforces one operation per VM at a time — duplicate requests get a `409 Conflict`
@@ -34,15 +34,14 @@ vm-builder-core  (terraform + libvirt provisioning)
 
 | Method   | Path                  | Description                              |
 |----------|-----------------------|------------------------------------------|
-| `POST`   | `/vm/create`          | Provision a new VM (returns `job_id`)    |
-| `DELETE` | `/vm/:name`           | Destroy a VM (returns `job_id`)          |
+| `POST`   | `/vm/create`          | Provision a new VM (synchronous)         |
+| `DELETE` | `/vm/:name`           | Destroy a VM (synchronous)               |
 | `GET`    | `/vm`                 | List all VMs via virsh                   |
 | `GET`    | `/vm/:name`           | VM details + creation params             |
 | `POST`   | `/vm/:name/start`     | Power on a VM                            |
 | `POST`   | `/vm/:name/shutdown`  | Graceful shutdown                        |
-| `GET`    | `/jobs/:id`           | Job status and buffered log output       |
 | `GET`    | `/node`               | Hypervisor node info                     |
-| `GET`    | `/health`             | Uptime and active job count              |
+| `GET`    | `/health`             | Uptime                                   |
 
 All API responses are JSON with `Content-Type: application/json`. Error responses use:
 
@@ -50,13 +49,11 @@ All API responses are JSON with `Content-Type: application/json`. Error response
 {"error":"message"}
 ```
 
-Create and delete are asynchronous. They return immediately with:
+Create and delete block until terraform completes and return the command output:
 
 ```json
-{"job_id":"7f3a9c12d4e8b6a1"}
+{"name":"ubuntu-0","output":"...terraform output..."}
 ```
-
-Clients should then poll `GET /jobs/{id}` for status and buffered logs. Job responses use stable snake_case fields such as `job_id`, `vm_name`, `start_time`, `end_time`, `error_code`, and `log`, with `status` values of `pending`, `running`, `done`, or `failed`.
 
 ## Related
 
@@ -75,7 +72,7 @@ mkdir -p ~/vm-builder-workspaces
 ./vm-builder-agent \
   --listen         :8080 \
   --core-repo      https://github.com/tlhakhan/vm-builder-core \
-  --terraform      terraform \
+  --terraform      tofu \
   --workspaces-dir ~/vm-builder-workspaces
 ```
 
