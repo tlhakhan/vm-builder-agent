@@ -127,7 +127,7 @@ vm_console_password = "secret"
 vm_automation_user        = "auto"
 vm_automation_user_pubkey = "ssh-rsa test"
 
-pci_devices               = [1, 2]
+pci_devices = [{ domain = 0, bus = 1, slot = 0, function = 0 }, { domain = 0, bus = 1, slot = 0, function = 1 }]
 `
 	if err := os.WriteFile(filepath.Join(workspaceDir, "terraform.tfvars"), []byte(tfvars), 0o644); err != nil {
 		t.Fatalf("write tfvars: %v", err)

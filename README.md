@@ -26,7 +26,8 @@ vm-builder-core  (terraform + libvirt provisioning)
 - Caches cloud images locally so subsequent creates skip re-downloading
 - Persists the terraform workspace (and state file) so destroy works later
 - Exposes virsh-backed endpoints for VM listing, details, and power management
-- Reports hypervisor node info (CPU, memory, disk, running VMs)
+- Reports hypervisor node info (CPU, memory, disk, running VMs, PCI passthrough devices)
+- Discovers vfio-pci bound devices and reports availability (free vs attached to a running VM)
 - Enforces one operation per VM at a time — duplicate requests get a `409 Conflict`
 - Supports toggleable mTLS with client CN verification, a CA loaded from URL, and an auto-generated self-signed server certificate
 

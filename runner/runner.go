@@ -54,8 +54,8 @@ type VMParams struct {
 	AutomationUser string `json:"automation_user"`
 	// vm_automation_user_pubkey
 	AutomationUserPubkey string `json:"automation_user_pubkey"`
-	// pci_devices — list of PCI bus numbers for passthrough (e.g. GPU).
-	PCIDevices []int `json:"pci_devices"`
+	// pci_devices — list of PCI BDF addresses for passthrough (e.g. ["0000:01:00.0","0000:01:00.1"]).
+	PCIDevices []string `json:"pci_devices"`
 }
 
 // applyDefaults fills in zero values with the same defaults as variables.tf so
@@ -71,14 +71,16 @@ func (p *VMParams) applyDefaults() {
 		p.DisksGiB = []int{48}
 	}
 	if p.PCIDevices == nil {
-		p.PCIDevices = []int{}
+		p.PCIDevices = []string{}
 	}
 }
 
 // tfvarsTemplate renders a terraform.tfvars file from a VMParams value.
 // All 11 root variables from vm-builder-core are written explicitly so that
 // the rendered file is self-documenting and never relies on terraform defaults.
-var tfvarsTemplate = template.Must(template.New("tfvars").Parse(
+var tfvarsTemplate = template.Must(template.New("tfvars").Funcs(template.FuncMap{
+	"parseBDF": parseBDF,
+}).Parse(
 	`vm_name            = "{{ .Name }}"
 vm_cpu_count       = {{ .CPU }}
 vm_memory_size_gib = {{ .MemoryGiB }}
@@ -91,7 +93,7 @@ vm_console_password = "{{ .ConsolePassword }}"
 vm_automation_user        = "{{ .AutomationUser }}"
 vm_automation_user_pubkey = "{{ .AutomationUserPubkey }}"
 
-pci_devices               = [{{ range $i, $d := .PCIDevices }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}]
+pci_devices = [{{ range $i, $d := .PCIDevices }}{{ if $i }}, {{ end }}{{ with parseBDF $d }}{ domain = {{ .Domain }}, bus = {{ .Bus }}, slot = {{ .Slot }}, function = {{ .Function }} }{{ end }}{{ end }}]
 `))
 
 // Runner executes terraform workflows on behalf of the HTTP handlers.
@@ -404,7 +406,7 @@ type PublicVMParams struct {
 	ConsoleUser          string `json:"consoleUser"`
 	AutomationUser       string `json:"automationUser"`
 	AutomationUserPubkey string `json:"automationUserPubkey"`
-	PCIDevices           []int  `json:"pciDevices"`
+	PCIDevices           []string `json:"pciDevices"`
 }
 
 // WorkspaceParams reads the terraform.tfvars from the named VM's workspace and
@@ -445,9 +447,74 @@ func parseTFVars(content string) PublicVMParams {
 		ConsoleUser:          unquote(kv["vm_console_user"]),
 		AutomationUser:       unquote(kv["vm_automation_user"]),
 		AutomationUserPubkey: unquote(kv["vm_automation_user_pubkey"]),
-		PCIDevices:           parseIntList(kv["pci_devices"]),
+		PCIDevices:           parseBDFObjectList(kv["pci_devices"]),
 	}
 	return p
+}
+
+// bdfAddr holds the four numeric components of a PCI BDF address.
+type bdfAddr struct {
+	Domain, Bus, Slot, Function uint64
+}
+
+// parseBDF parses a canonical PCI BDF string ("0000:01:00.0") into its
+// four numeric components. Returns nil if the string is malformed.
+func parseBDF(addr string) *bdfAddr {
+	// Expected format: DDDD:BB:SS.F  (all hex)
+	parts := strings.SplitN(addr, ":", 3)
+	if len(parts) != 3 {
+		return nil
+	}
+	sf := strings.SplitN(parts[2], ".", 2)
+	if len(sf) != 2 {
+		return nil
+	}
+	parse := func(s string) (uint64, error) { return strconv.ParseUint(s, 16, 64) }
+	d, err1 := parse(parts[0])
+	b, err2 := parse(parts[1])
+	s, err3 := parse(sf[0])
+	f, err4 := parse(sf[1])
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return nil
+	}
+	return &bdfAddr{Domain: d, Bus: b, Slot: s, Function: f}
+}
+
+// parseBDFObjectList parses the tfvars object-list representation written by
+// tfvarsTemplate back into BDF strings. It handles the format:
+//
+//	[{ domain = 0, bus = 1, slot = 0, function = 0 }, ...]
+func parseBDFObjectList(s string) []string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	if strings.TrimSpace(s) == "" {
+		return []string{}
+	}
+	// Split on "}" to get individual objects, then re-parse each.
+	var out []string
+	for _, chunk := range strings.Split(s, "}") {
+		chunk = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), ","))
+		chunk = strings.TrimPrefix(chunk, "{")
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+		kv := map[string]uint64{}
+		for _, field := range strings.Split(chunk, ",") {
+			k, v, ok := strings.Cut(field, "=")
+			if !ok {
+				continue
+			}
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				continue
+			}
+			kv[strings.TrimSpace(k)] = n
+		}
+		out = append(out, fmt.Sprintf("%04x:%02x:%02x.%x",
+			kv["domain"], kv["bus"], kv["slot"], kv["function"]))
+	}
+	return out
 }
 
 // unquote strips surrounding double-quotes from a tfvars string value.

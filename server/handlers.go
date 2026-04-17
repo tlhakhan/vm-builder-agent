@@ -173,7 +173,7 @@ type publicVMParamsResponse struct {
 	ConsoleUser          string `json:"console_user"`
 	AutomationUser       string `json:"automation_user"`
 	AutomationUserPubkey string `json:"automation_user_pubkey"`
-	PCIDevices           []int  `json:"pci_devices"`
+	PCIDevices           []string `json:"pci_devices"`
 }
 
 func newPublicVMParamsResponse(params runner.PublicVMParams) *publicVMParamsResponse {
@@ -183,7 +183,7 @@ func newPublicVMParamsResponse(params runner.PublicVMParams) *publicVMParamsResp
 	}
 	pci := params.PCIDevices
 	if pci == nil {
-		pci = []int{}
+		pci = []string{}
 	}
 	return &publicVMParamsResponse{
 		Name:                 params.Name,
