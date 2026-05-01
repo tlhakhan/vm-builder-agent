@@ -229,28 +229,53 @@ func vmCounts(ctx context.Context) nodeVMs {
 	return counts
 }
 
-const vfioPCIDriverPath = "/sys/bus/pci/drivers/vfio-pci"
+const pciDriversPath = "/sys/bus/pci/drivers"
 
-// pciPassthroughDevices returns PCI devices currently bound to the vfio-pci driver,
+// pciPassthroughDevices returns PCI devices currently bound to any VFIO driver,
 // annotated with whether they are attached to a running VM.
+//
+// Multiple VFIO driver variants exist (e.g. vfio-pci, xe-vfio-pci for Intel Xe
+// GPUs on Ubuntu 26.04+). We scan all drivers whose name contains "vfio" rather
+// than hardcoding a single path. We also union with devices reported by running
+// VMs via virsh, because on newer kernels an active VFIO device may disappear
+// from its driver directory while a VM holds it open.
 func pciPassthroughDevices(ctx context.Context) []nodePCIDevice {
-	entries, err := os.ReadDir(vfioPCIDriverPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("reading vfio-pci driver dir failed", "err", err)
-		}
-		return nil
-	}
-
 	attached := attachedVFIODevices(ctx)
 
-	var devices []nodePCIDevice
-	for _, e := range entries {
-		// BDF addresses look like "0000:01:00.0" — skip control files.
-		name := e.Name()
-		if !strings.Contains(name, ":") {
+	// Collect BDF addresses from all *vfio* driver directories.
+	seen := map[string]bool{}
+	var bdfs []string
+	driverEntries, err := os.ReadDir(pciDriversPath)
+	if err != nil && !os.IsNotExist(err) {
+		slog.Warn("reading pci drivers dir failed", "err", err)
+	}
+	for _, de := range driverEntries {
+		if !strings.Contains(de.Name(), "vfio") {
 			continue
 		}
+		devEntries, err := os.ReadDir(filepath.Join(pciDriversPath, de.Name()))
+		if err != nil {
+			continue
+		}
+		for _, e := range devEntries {
+			name := e.Name()
+			if strings.Contains(name, ":") && !seen[name] {
+				seen[name] = true
+				bdfs = append(bdfs, name)
+			}
+		}
+	}
+	// Also include devices attached to running VMs that may no longer appear
+	// in any driver directory while the VM holds them open.
+	for bdf := range attached {
+		if !seen[bdf] {
+			seen[bdf] = true
+			bdfs = append(bdfs, bdf)
+		}
+	}
+
+	var devices []nodePCIDevice
+	for _, name := range bdfs {
 		if dev, ok := readPCIDevice(ctx, name); ok {
 			if vm, inUse := attached[name]; inUse {
 				dev.AttachedTo = vm
