@@ -41,9 +41,10 @@ type VMParams struct {
 	CPU int `json:"cpu"`
 	// vm_memory_size_gib (default 4)
 	MemoryGiB int `json:"memory_gib"`
-	// vm_disk_sizes_gib — first element is root disk, remainder are data disks.
-	// Max 8 disks. Default [48].
-	DisksGiB []int `json:"disks_gib"`
+	// vm_root_disk_size_gib (default 48)
+	RootDiskGiB int `json:"root_disk_size_gib"`
+	// vm_data_disk_size_gib — optional ZFS zvol data disk; 0 means no data disk (null)
+	DataDiskGiB int `json:"data_disk_size_gib,omitempty"`
 	// vm_cloud_image_url
 	CloudImageURL string `json:"cloud_image_url"`
 	// vm_console_user
@@ -56,6 +57,8 @@ type VMParams struct {
 	AutomationUserPubkey string `json:"automation_user_pubkey"`
 	// pci_devices — list of PCI BDF addresses for passthrough (e.g. ["0000:01:00.0","0000:01:00.1"]).
 	PCIDevices []string `json:"pci_devices"`
+	// launch_script_url — optional URL to a shell script run after cloud-init finishes
+	LaunchScriptURL string `json:"launch_script_url,omitempty"`
 }
 
 // applyDefaults fills in zero values with the same defaults as variables.tf so
@@ -67,8 +70,8 @@ func (p *VMParams) applyDefaults() {
 	if p.MemoryGiB == 0 {
 		p.MemoryGiB = 4
 	}
-	if len(p.DisksGiB) == 0 {
-		p.DisksGiB = []int{48}
+	if p.RootDiskGiB == 0 {
+		p.RootDiskGiB = 48
 	}
 	if p.PCIDevices == nil {
 		p.PCIDevices = []string{}
@@ -84,7 +87,8 @@ var tfvarsTemplate = template.Must(template.New("tfvars").Funcs(template.FuncMap
 	`vm_name            = "{{ .Name }}"
 vm_cpu_count       = {{ .CPU }}
 vm_memory_size_gib = {{ .MemoryGiB }}
-vm_disk_sizes_gib  = [{{ range $i, $d := .DisksGiB }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}]
+vm_root_disk_size_gib = {{ .RootDiskGiB }}
+vm_data_disk_size_gib = {{ if .DataDiskGiB }}{{ .DataDiskGiB }}{{ else }}null{{ end }}
 vm_cloud_image_url = "{{ .CloudImageURL }}"
 
 vm_console_user     = "{{ .ConsoleUser }}"
@@ -184,6 +188,16 @@ func (r *Runner) Create(ctx context.Context, params VMParams) (string, error) {
 		return cloneOut, fmt.Errorf("write tfvars: %w", err)
 	}
 
+	if params.LaunchScriptURL != "" {
+		script, err := fetchLaunchScript(ctx, params.LaunchScriptURL)
+		if err != nil {
+			return cloneOut, fmt.Errorf("fetch launch script: %w", err)
+		}
+		if err := r.writeLaunchScript(workDir, params.LaunchScriptURL, script); err != nil {
+			return cloneOut, fmt.Errorf("write launch script: %w", err)
+		}
+	}
+
 	slog.Info("terraform init", "vm_name", params.Name)
 	initOut, err := r.runCmd(ctx, workDir, r.cfg.TerraformBin, "init", "-no-color")
 	output := cloneOut + initOut
@@ -265,6 +279,37 @@ func (r *Runner) prepareWorkspace(ctx context.Context, vmName string) (workDir s
 	}
 
 	return workDir, output, nil
+}
+
+// writeLaunchScript writes the script content to launch_script.sh (picked up by
+// terraform via fileexists()) and the source URL to launch_script_url.txt so
+// WorkspaceParams can reconstruct the original URL later.
+func (r *Runner) writeLaunchScript(workDir, scriptURL, content string) error {
+	if err := os.WriteFile(filepath.Join(workDir, "launch_script.sh"), []byte(content), 0o640); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(workDir, "launch_script_url.txt"), []byte(scriptURL), 0o640)
+}
+
+// fetchLaunchScript downloads the shell script at rawURL and returns its content.
+func fetchLaunchScript(ctx context.Context, rawURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d fetching launch script from %s", resp.StatusCode, rawURL)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // writeTFVars renders the tfvars template and writes it to the work dir.
@@ -398,27 +443,33 @@ func cacheFromHTTP(ctx context.Context, rawURL, dst string) error {
 // PublicVMParams is a view of VMParams with sensitive fields omitted, safe for
 // inclusion in API responses.
 type PublicVMParams struct {
-	Name                 string `json:"name"`
-	CPU                  int    `json:"cpu"`
-	MemoryGiB            int    `json:"memoryGib"`
-	DisksGiB             []int  `json:"disksGib"`
-	CloudImageURL        string `json:"cloudImageUrl"`
-	ConsoleUser          string `json:"consoleUser"`
-	AutomationUser       string `json:"automationUser"`
-	AutomationUserPubkey string `json:"automationUserPubkey"`
-	PCIDevices           []string `json:"pciDevices"`
+	Name                 string
+	CPU                  int
+	MemoryGiB            int
+	RootDiskGiB          int
+	DataDiskGiB          int
+	CloudImageURL        string
+	ConsoleUser          string
+	AutomationUser       string
+	AutomationUserPubkey string
+	PCIDevices           []string
+	LaunchScriptURL      string
 }
 
 // WorkspaceParams reads the terraform.tfvars from the named VM's workspace and
 // returns the non-sensitive creation parameters. Returns an error if the
 // workspace does not exist or the file cannot be parsed.
 func (r *Runner) WorkspaceParams(vmName string) (PublicVMParams, error) {
-	path := filepath.Join(r.workspaceDir(vmName), "terraform.tfvars")
-	data, err := os.ReadFile(path)
+	dir := r.workspaceDir(vmName)
+	data, err := os.ReadFile(filepath.Join(dir, "terraform.tfvars"))
 	if err != nil {
 		return PublicVMParams{}, fmt.Errorf("read tfvars: %w", err)
 	}
-	return parseTFVars(string(data)), nil
+	p := parseTFVars(string(data))
+	if url, err := os.ReadFile(filepath.Join(dir, "launch_script_url.txt")); err == nil {
+		p.LaunchScriptURL = strings.TrimSpace(string(url))
+	}
+	return p, nil
 }
 
 // parseTFVars parses the subset of HCL-style key = value assignments written
@@ -442,7 +493,8 @@ func parseTFVars(content string) PublicVMParams {
 		Name:                 unquote(kv["vm_name"]),
 		CPU:                  parseInt(kv["vm_cpu_count"]),
 		MemoryGiB:            parseInt(kv["vm_memory_size_gib"]),
-		DisksGiB:             parseIntList(kv["vm_disk_sizes_gib"]),
+		RootDiskGiB:          parseInt(kv["vm_root_disk_size_gib"]),
+		DataDiskGiB:          parseInt(kv["vm_data_disk_size_gib"]),
 		CloudImageURL:        unquote(kv["vm_cloud_image_url"]),
 		ConsoleUser:          unquote(kv["vm_console_user"]),
 		AutomationUser:       unquote(kv["vm_automation_user"]),
@@ -532,21 +584,3 @@ func parseInt(s string) int {
 	return n
 }
 
-// parseIntList parses a tfvars list literal such as "[192]" or "[3, 4]" into
-// a []int. Returns an empty slice if the value is absent or malformed.
-func parseIntList(s string) []int {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "[")
-	s = strings.TrimSuffix(s, "]")
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return []int{}
-	}
-	var out []int
-	for _, part := range strings.Split(s, ",") {
-		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
-}

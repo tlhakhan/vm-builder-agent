@@ -21,7 +21,7 @@ func TestCreateVMReturnsOK(t *testing.T) {
 		"name":"vm-create",
 		"cpu":2,
 		"memory_gib":4,
-		"disks_gib":[48],
+		"root_disk_size_gib":48,
 		"cloud_image_url":"file://` + env.imagePath + `",
 		"console_user":"ubuntu",
 		"console_password":"secret",
@@ -118,7 +118,8 @@ func TestGetVMUsesSnakeCaseFields(t *testing.T) {
 	tfvars := `vm_name            = "vm-info"
 vm_cpu_count       = 4
 vm_memory_size_gib = 8
-vm_disk_sizes_gib  = [48, 64]
+vm_root_disk_size_gib = 48
+vm_data_disk_size_gib = 64
 vm_cloud_image_url = "file:///tmp/image.qcow2"
 
 vm_console_user     = "ubuntu"
@@ -162,6 +163,9 @@ pci_devices = [{ domain = 0, bus = 1, slot = 0, function = 0 }, { domain = 0, bu
 	}
 	if _, ok := params["memory_gib"]; !ok {
 		t.Fatalf("expected memory_gib in creation_params: %v", params)
+	}
+	if _, ok := params["root_disk_size_gib"]; !ok {
+		t.Fatalf("expected root_disk_size_gib in creation_params: %v", params)
 	}
 	if _, ok := params["cloud_image_url"]; !ok {
 		t.Fatalf("expected cloud_image_url in creation_params: %v", params)

@@ -90,6 +90,27 @@ All examples below target `http://localhost:8080`.
 curl -s http://localhost:8080/node | jq
 ```
 
+Returns hypervisor details including storage stats:
+
+```json
+{
+  "hostname": "sparkle-1.local",
+  "kernel_version": "...",
+  "os_name": "...",
+  "cpu": { "model_name": "...", "total_cores": 16 },
+  "memory": { "total_bytes": 0, "used_bytes": 0, "free_bytes": 0, "available_bytes": 0 },
+  "storage": {
+    "primary":   { "total_bytes": 0, "used_bytes": 0, "free_bytes": 0 },
+    "secondary": { "total_bytes": 0, "used_bytes": 0, "free_bytes": 0, "health": "online" }
+  },
+  "vms": { "total": 2, "running": 1 },
+  "pci_devices": []
+}
+```
+
+`storage.primary` reports the `/data` filesystem (where VM images live).
+`storage.secondary` reports the `zvols` ZFS pool (where data disks are created). It is omitted if the pool is not present.
+
 ### List VMs
 
 ```bash
@@ -100,6 +121,21 @@ curl -s http://localhost:8080/vm | jq
 
 Cloud images can be downloaded from [https://cloud-images.ubuntu.com](https://cloud-images.ubuntu.com).
 
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | VM name |
+| `cpu` | int | no | `2` | vCPU count |
+| `memory_gib` | int | no | `4` | RAM in GiB |
+| `root_disk_size_gib` | int | no | `48` | Root disk size in GiB (qcow2 in libvirt pool) |
+| `data_disk_size_gib` | int | no | — | Optional data disk in GiB (ZFS zvol on `zvols` pool). Omit for no data disk. |
+| `cloud_image_url` | string | yes | — | URL to a cloud image (http/https cached locally, or `file://`) |
+| `console_user` | string | yes | — | Console username |
+| `console_password` | string | yes | — | Console password |
+| `automation_user` | string | yes | — | SSH automation username |
+| `automation_user_pubkey` | string | yes | — | SSH public key for the automation user |
+| `pci_devices` | array | no | `[]` | PCI BDF addresses to pass through (e.g. `["0000:01:00.0"]`) |
+| `launch_script_url` | string | no | — | URL to a shell script run after cloud-init finishes |
+
 ```bash
 curl -s -X POST http://localhost:8080/vm/create \
   -H 'Content-Type: application/json' \
@@ -107,13 +143,15 @@ curl -s -X POST http://localhost:8080/vm/create \
     "name":                   "ubuntu-0",
     "cpu":                    4,
     "memory_gib":             8,
-    "disks_gib":              [64],
+    "root_disk_size_gib":     64,
+    "data_disk_size_gib":     100,
     "cloud_image_url":        "file:///home/ubuntu/downloads/noble-server-cloudimg-amd64.img",
     "console_user":           "ubuntu",
     "console_password":       "ubuntu",
     "automation_user":        "ubuntu",
     "automation_user_pubkey": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDNCeFA0v8d3GQIHmMG1T/CmGieRnqE2Vhwno0qYwgi2PwODbv3sjUFDUHphxLzVjbPf7m7bSRkigVPynfsiV/Ml+Wbt3FgNygy2WGbOJKoSMhKPAwPZwfrpdG/OkO4q+SjBiqFuBYQVcJ47a4+jrj9C6Fbse3fR43/ZxxIZDKCMlIZBC75J2uXHSiwbVYIh/EX2w4unZgO8KyecuRawQCbB3I+LZBKpinnJn+Sb6vJB57GdDlEmVfqPp4nbSDq9xSbtrpoFkniiVxwTsdj9E2xCsfASJywrQeNWVDVnHvHDSxwxBWfmzsfHCJ/N+xDrU0WY6BBoof33ja1+4fhSEZ/LKoLD2H57z18xsgANUHPu1VgUfGn/Wp9BfJ7BYIfD57XufA4IGftFTIcZAGTEFRxEpHQWJ68s5SkN7lyrC3+ph/BJVCS+PnBe78Zjbi0SOdfpzvJQI7/xXVYfOUAVC+undyljKdpHUQpd6BsRmChBEKDnxlupdBVYzJb4mLKlu0=",
-    "pci_devices":            ["0000:01:00.0", "0000:01:00.1"]
+    "pci_devices":            ["0000:01:00.0", "0000:01:00.1"],
+    "launch_script_url":      "https://gist.githubusercontent.com/example/script.sh"
   }'
 ```
 
@@ -264,7 +302,7 @@ curl -s $CURL_TLS $BASE/vm | jq
 
 ### Create a VM
 
-Cloud images can be downloaded from [https://cloud-images.ubuntu.com](https://cloud-images.ubuntu.com).
+See the field reference in the [Development section](#create-a-vm) above.
 
 ```bash
 curl -s $CURL_TLS -X POST $BASE/vm/create \
@@ -273,7 +311,7 @@ curl -s $CURL_TLS -X POST $BASE/vm/create \
     "name":                   "ubuntu-0",
     "cpu":                    4,
     "memory_gib":             8,
-    "disks_gib":              [64],
+    "root_disk_size_gib":     64,
     "cloud_image_url":        "file:///home/ubuntu/downloads/noble-server-cloudimg-amd64.img",
     "console_user":           "ubuntu",
     "console_password":       "ubuntu",

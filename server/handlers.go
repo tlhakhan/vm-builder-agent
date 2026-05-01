@@ -165,22 +165,20 @@ type vmInfo struct {
 }
 
 type publicVMParamsResponse struct {
-	Name                 string `json:"name"`
-	CPU                  int    `json:"cpu"`
-	MemoryGiB            int    `json:"memory_gib"`
-	DisksGiB             []int  `json:"disks_gib"`
-	CloudImageURL        string `json:"cloud_image_url"`
-	ConsoleUser          string `json:"console_user"`
-	AutomationUser       string `json:"automation_user"`
-	AutomationUserPubkey string `json:"automation_user_pubkey"`
+	Name                 string   `json:"name"`
+	CPU                  int      `json:"cpu"`
+	MemoryGiB            int      `json:"memory_gib"`
+	RootDiskSizeGiB      int      `json:"root_disk_size_gib"`
+	DataDiskSizeGiB      int      `json:"data_disk_size_gib,omitempty"`
+	CloudImageURL        string   `json:"cloud_image_url"`
+	ConsoleUser          string   `json:"console_user"`
+	AutomationUser       string   `json:"automation_user"`
+	AutomationUserPubkey string   `json:"automation_user_pubkey"`
 	PCIDevices           []string `json:"pci_devices"`
+	LaunchScriptURL      string   `json:"launch_script_url,omitempty"`
 }
 
 func newPublicVMParamsResponse(params runner.PublicVMParams) *publicVMParamsResponse {
-	disks := params.DisksGiB
-	if disks == nil {
-		disks = []int{}
-	}
 	pci := params.PCIDevices
 	if pci == nil {
 		pci = []string{}
@@ -189,12 +187,14 @@ func newPublicVMParamsResponse(params runner.PublicVMParams) *publicVMParamsResp
 		Name:                 params.Name,
 		CPU:                  params.CPU,
 		MemoryGiB:            params.MemoryGiB,
-		DisksGiB:             disks,
+		RootDiskSizeGiB:      params.RootDiskGiB,
+		DataDiskSizeGiB:      params.DataDiskGiB,
 		CloudImageURL:        params.CloudImageURL,
 		ConsoleUser:          params.ConsoleUser,
 		AutomationUser:       params.AutomationUser,
 		AutomationUserPubkey: params.AutomationUserPubkey,
 		PCIDevices:           pci,
+		LaunchScriptURL:      params.LaunchScriptURL,
 	}
 }
 

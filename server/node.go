@@ -22,9 +22,21 @@ type nodeInfoResponse struct {
 	OSName        string          `json:"os_name"`
 	CPU           nodeCPU         `json:"cpu"`
 	Memory        nodeMemory      `json:"memory"`
-	Disk          *nodeFS         `json:"disk,omitempty"`
+	Storage       nodeStorage     `json:"storage"`
 	VMs           nodeVMs         `json:"vms"`
 	PCIDevices    []nodePCIDevice `json:"pci_devices"`
+}
+
+type nodeStorage struct {
+	Primary   *nodeFS    `json:"primary"`
+	Secondary *nodeZPool `json:"secondary,omitempty"`
+}
+
+type nodeZPool struct {
+	TotalBytes int64  `json:"total_bytes"`
+	UsedBytes  int64  `json:"used_bytes"`
+	FreeBytes  int64  `json:"free_bytes"`
+	Health     string `json:"health"`
 }
 
 type nodeCPU struct {
@@ -79,9 +91,12 @@ func (h *handlers) nodeInfo(w http.ResponseWriter, r *http.Request) {
 		OSName:        osImage(),
 		CPU:           cpuInfo(),
 		Memory:        procMeminfo(),
-		Disk:          diskInfo("/"),
-		VMs:           vmCounts(ctx),
-		PCIDevices:    pciPassthroughDevices(ctx),
+		Storage: nodeStorage{
+			Primary:   diskInfo(primaryStoragePath),
+			Secondary: zpoolInfo(secondaryZPoolName),
+		},
+		VMs:        vmCounts(ctx),
+		PCIDevices: pciPassthroughDevices(ctx),
 	}
 
 	writeJSON(w, http.StatusOK, info)
@@ -230,6 +245,38 @@ func vmCounts(ctx context.Context) nodeVMs {
 }
 
 const pciDriversPath = "/sys/bus/pci/drivers"
+
+const (
+	primaryStoragePath = "/data"
+	secondaryZPoolName = "zvols"
+)
+
+// zpoolInfo returns pool stats for poolName via `zpool get -Hp`, or nil if the
+// pool is absent or the command fails.
+func zpoolInfo(poolName string) *nodeZPool {
+	out, err := exec.Command("zpool", "get", "-Hp",
+		"-o", "name,property,value",
+		"free,size,health", poolName).Output()
+	if err != nil {
+		return nil
+	}
+	props := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 {
+			props[fields[1]] = fields[2]
+		}
+	}
+	total := func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n }
+	size := total(props["size"])
+	free := total(props["free"])
+	return &nodeZPool{
+		TotalBytes: size,
+		UsedBytes:  size - free,
+		FreeBytes:  free,
+		Health:     strings.ToLower(props["health"]),
+	}
+}
 
 // pciPassthroughDevices returns PCI devices currently bound to any VFIO driver,
 // annotated with whether they are attached to a running VM.
